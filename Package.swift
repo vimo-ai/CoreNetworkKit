@@ -1,0 +1,24 @@
+// swift-tools-version: 5.8
+import PackageDescription
+
+let package = Package(
+    name: "CoreNetworkKit",
+    platforms: [
+        .macOS(.v12),
+        .iOS(.v15),
+        .tvOS(.v15)
+    ],
+    products: [
+        .library(
+            name: "CoreNetworkKit",
+            targets: ["CoreNetworkKit"]),
+    ],
+    dependencies: [
+        .package(path: "../MLoggerKit")
+    ],
+    targets: [
+        .target(
+            name: "CoreNetworkKit",
+            dependencies: ["MLoggerKit"])
+    ]
+)
