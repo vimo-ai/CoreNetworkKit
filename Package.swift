@@ -14,7 +14,7 @@ let package = Package(
             targets: ["CoreNetworkKit"]),
     ],
     dependencies: [
-        .package(path: "../MLoggerKit")
+        .package(url: "https://github.com/vimo-ai/MLoggerKit.git", from: "1.0.0")
     ],
     targets: [
         .target(
