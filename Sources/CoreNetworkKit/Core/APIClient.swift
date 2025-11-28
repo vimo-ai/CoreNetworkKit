@@ -9,9 +9,11 @@ public final class APIClient {
     internal let engine: NetworkEngine
     internal let tokenStorage: any TokenStorage
     internal let userFeedbackHandler: UserFeedbackHandler?
+    internal let tokenRefresher: TokenRefresher?
     // 使用 MLoggerKit 网络日志器
     internal let logger = LoggerFactory.network
     internal let jsonDecoder: JSONDecoder
+    private let refreshCoordinator = TokenRefreshCoordinator()
     
     // MARK: - 初始化
     
@@ -21,11 +23,12 @@ public final class APIClient {
     ///   - tokenStorage: 用户令牌的存储机制。
     ///   - userFeedbackHandler: 用户反馈处理器，用于BeaconFlow请求的Toast显示和日志记录。
     ///   - jsonDecoder: 一个可选的JSON解码器，如果需要自定义解码策略。
-    public init(engine: NetworkEngine, tokenStorage: any TokenStorage, userFeedbackHandler: UserFeedbackHandler? = nil, jsonDecoder: JSONDecoder = JSONDecoder()) {
+    public init(engine: NetworkEngine, tokenStorage: any TokenStorage, userFeedbackHandler: UserFeedbackHandler? = nil, jsonDecoder: JSONDecoder = JSONDecoder(), tokenRefresher: TokenRefresher? = nil) {
         self.engine = engine
         self.tokenStorage = tokenStorage
         self.userFeedbackHandler = userFeedbackHandler
         self.jsonDecoder = jsonDecoder
+        self.tokenRefresher = tokenRefresher
     }
     
     // MARK: - 公开方法
@@ -34,51 +37,7 @@ public final class APIClient {
     /// - Parameter request: 一个遵循 `Request` 协议的请求实例。
     /// - Returns: 解码后的响应模型。
     public func send<R: Request>(_ request: R) async throws -> R.Response {
-        var responseData: Data?
-        do {
-            // 1. 根据 Request 协议的属性构建基础的 URLRequest。
-            let urlRequest = try buildURLRequest(from: request)
-            
-            // 记录请求信息
-            logger.debug("📤 \(urlRequest.httpMethod ?? "") \(urlRequest.url?.path ?? "")", tag: "request")
-
-            // 2. 创建认证上下文
-            let authContext = AuthenticationContext(tokenStorage: self.tokenStorage)
-
-            // 3. 异步地将认证策略应用于请求。
-            let authenticatedRequest = try await request.authentication.apply(to: urlRequest, context: authContext)
-            
-            // 4. 使用认证后的请求执行网络调用。
-            let (data, response) = try await engine.performRequest(authenticatedRequest)
-            responseData = data
-            
-            // 5. 验证HTTP响应状态码。
-            try validate(response: response, data: data)
-
-            // 6. 解码响应模型。这是解码的唯一点。
-            // 业务码的检查（如 code == 0）应由调用方或更高层来处理，而不是在这个通用客户端中。
-            let responseModel = try jsonDecoder.decode(R.Response.self, from: data)
-            
-            return responseModel
-
-        } catch let error as DecodingError {
-            logger.error("解码失败 \(request.path): \(error.localizedDescription)", tag: "decode-error")
-            
-            // 如果解码失败，记录原始数据。
-            if let data = responseData, let rawString = String(data: data, encoding: .utf8) {
-                logger.debug("解码失败时的原始数据:\n---BEGIN---\n\(rawString)\n---END---", tag: "raw-data")
-            }
-            
-            throw APIError.decodingFailed(error: error, data: responseData)
-        } catch {
-            // 如果已经是APIError，则重新抛出，否则包装它。
-            if let apiError = error as? APIError {
-                throw apiError
-            } else {
-                logger.fault("‼️ 未处理的错误 \(request.path): \(error.localizedDescription)", tag: "unhandled-error")
-                throw APIError.requestFailed(error)
-            }
-        }
+        return try await send(request, allowRetryAfterRefresh: true)
     }
     
     // MARK: - 私有方法
@@ -162,5 +121,84 @@ public final class APIClient {
             
             throw APIError.serverError(statusCode: httpResponse.statusCode, message: serverMessage)
         }
+    }
+
+    // MARK: - 私有方法
+
+    private func send<R: Request>(_ request: R, allowRetryAfterRefresh: Bool) async throws -> R.Response {
+        var responseData: Data?
+        do {
+            let urlRequest = try buildURLRequest(from: request)
+            logger.debug("📤 \(urlRequest.httpMethod ?? "") \(urlRequest.url?.path ?? "")", tag: "request")
+
+            let authContext = AuthenticationContext(tokenStorage: self.tokenStorage)
+            let authenticatedRequest = try await request.authentication.apply(to: urlRequest, context: authContext)
+            
+            let (data, response) = try await engine.performRequest(authenticatedRequest)
+            responseData = data
+            try validate(response: response, data: data)
+
+            let responseModel = try jsonDecoder.decode(R.Response.self, from: data)
+            return responseModel
+
+        } catch let error as DecodingError {
+            logger.error("解码失败 \(request.path): \(error.localizedDescription)", tag: "decode-error")
+
+            if let data = responseData, let rawString = String(data: data, encoding: .utf8) {
+                logger.debug("解码失败时的原始数据:\n---BEGIN---\n\(rawString)\n---END---", tag: "raw-data")
+            }
+
+            throw APIError.decodingFailed(error: error, data: responseData)
+        } catch let apiError as APIError {
+            if allowRetryAfterRefresh,
+               shouldAttemptRefresh(for: apiError),
+               let tokenRefresher = tokenRefresher {
+                do {
+                    try await refreshCoordinator.refresh(using: tokenRefresher)
+                    return try await send(request, allowRetryAfterRefresh: false)
+                } catch {
+                    throw apiError
+                }
+            }
+            throw apiError
+        } catch {
+            if let apiError = error as? APIError {
+                throw apiError
+            } else {
+                logger.fault("‼️ 未处理的错误 \(request.path): \(error.localizedDescription)", tag: "unhandled-error")
+                throw APIError.requestFailed(error)
+            }
+        }
+    }
+
+    private func shouldAttemptRefresh(for error: APIError) -> Bool {
+        switch error {
+        case .serverError(statusCode: 401, _):
+            return true
+        case .authenticationFailed:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Token Refresh Coordinator
+
+private actor TokenRefreshCoordinator {
+    private var ongoingTask: Task<String, Error>?
+
+    func refresh(using refresher: TokenRefresher) async throws {
+        if let task = ongoingTask {
+            _ = try await task.value
+            return
+        }
+
+        let task = Task { () throws -> String in
+            try await refresher.refreshToken()
+        }
+        ongoingTask = task
+        defer { ongoingTask = nil }
+        _ = try await task.value
     }
 }
