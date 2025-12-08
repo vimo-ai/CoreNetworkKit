@@ -13,7 +13,7 @@ public final class APIClient {
     // 使用 MLoggerKit 网络日志器
     internal let logger = LoggerFactory.network
     internal let jsonDecoder: JSONDecoder
-    private let refreshCoordinator = TokenRefreshCoordinator()
+    internal let refreshCoordinator = TokenRefreshCoordinator()
     
     // MARK: - 初始化
     
@@ -142,7 +142,7 @@ public final class APIClient {
             return responseModel
 
         } catch let error as DecodingError {
-            logger.error("解码失败 \(request.path): \(error.localizedDescription)", tag: "decode-error")
+            logger.error("解码失败 \(request.path):\n\(DecodingErrorFormatter.format(error))", tag: "decode-error")
 
             if let data = responseData, let rawString = String(data: data, encoding: .utf8) {
                 logger.debug("解码失败时的原始数据:\n---BEGIN---\n\(rawString)\n---END---", tag: "raw-data")
@@ -150,13 +150,22 @@ public final class APIClient {
 
             throw APIError.decodingFailed(error: error, data: responseData)
         } catch let apiError as APIError {
+            // 调试日志：检查为什么没有触发刷新
+            print("[APIClient] 捕获到 APIError: \(apiError)")
+            print("[APIClient] allowRetryAfterRefresh = \(allowRetryAfterRefresh)")
+            print("[APIClient] shouldAttemptRefresh = \(shouldAttemptRefresh(for: apiError))")
+            print("[APIClient] tokenRefresher is nil? \(tokenRefresher == nil)")
+            
             if allowRetryAfterRefresh,
                shouldAttemptRefresh(for: apiError),
                let tokenRefresher = tokenRefresher {
                 do {
+                    print("[APIClient] 401 detected, attempting token refresh...")
                     try await refreshCoordinator.refresh(using: tokenRefresher)
+                    print("[APIClient] refresh succeeded, retrying request once")
                     return try await send(request, allowRetryAfterRefresh: false)
                 } catch {
+                    print("[APIClient] refresh failed: \(error)")
                     throw apiError
                 }
             }
@@ -185,10 +194,10 @@ public final class APIClient {
 
 // MARK: - Token Refresh Coordinator
 
-private actor TokenRefreshCoordinator {
+internal actor TokenRefreshCoordinator {
     private var ongoingTask: Task<String, Error>?
 
-    func refresh(using refresher: TokenRefresher) async throws {
+    internal func refresh(using refresher: TokenRefresher) async throws {
         if let task = ongoingTask {
             _ = try await task.value
             return

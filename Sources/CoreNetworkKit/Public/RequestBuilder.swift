@@ -1,0 +1,234 @@
+import Foundation
+
+/// 请求构建器
+///
+/// 提供链式 API 构建和执行网络请求：
+/// - 支持灵活配置生命周期、控制策略、缓存、重试等
+/// - 提供类型安全的请求执行
+///
+/// 使用示例：
+/// ```swift
+/// let user = try await RequestBuilder(request: GetUserRequest(id: "123"))
+///     .lifecycle(.view(owner: self))
+///     .cache(.cacheFirst(maxAge: 60))
+///     .retry(.exponential(maxAttempts: 3, initialDelay: 1, multiplier: 2))
+///     .execute()
+/// ```
+public final class RequestBuilder<R: Request> {
+    private let request: R
+    private var config: TaskConfig
+
+    // MARK: - Dependencies (需要外部注入)
+
+    private let executor: TaskExecutor
+    private let authContext: AuthenticationContext
+
+    // MARK: - Initialization
+
+    /// 创建请求构建器
+    /// - Parameters:
+    ///   - request: Request 对象
+    ///   - executor: 任务执行器
+    ///   - authContext: 认证上下文
+    public init(
+        request: R,
+        executor: TaskExecutor,
+        authContext: AuthenticationContext
+    ) {
+        self.request = request
+        self.config = TaskConfig()
+        self.executor = executor
+        self.authContext = authContext
+    }
+
+    // MARK: - Configuration Methods
+
+    /// 设置生命周期
+    @discardableResult
+    public func lifecycle(_ lifecycle: Lifecycle) -> Self {
+        config.lifecycle = lifecycle
+        return self
+    }
+
+    /// 设置防抖
+    @discardableResult
+    public func debounce(_ interval: TimeInterval) -> Self {
+        config.control.debounce = interval
+        return self
+    }
+
+    /// 设置节流
+    @discardableResult
+    public func throttle(_ interval: TimeInterval) -> Self {
+        config.control.throttle = interval
+        return self
+    }
+
+    /// 设置去重
+    @discardableResult
+    public func deduplicate() -> Self {
+        config.control.deduplicate = true
+        return self
+    }
+
+    /// 设置优先级
+    @discardableResult
+    public func priority(_ priority: ControlPolicy.Priority) -> Self {
+        config.control.priority = priority
+        return self
+    }
+
+    /// 设置缓存策略
+    @discardableResult
+    public func cache(_ policy: CachePolicy) -> Self {
+        config.cache = policy
+        return self
+    }
+
+    /// 设置重试策略
+    @discardableResult
+    public func retry(_ policy: RetryPolicy) -> Self {
+        config.retry = policy
+        return self
+    }
+
+    /// 设置单次请求超时
+    @discardableResult
+    public func timeout(_ interval: TimeInterval) -> Self {
+        config.timeout = interval
+        return self
+    }
+
+    /// 设置整体超时（包含所有重试）
+    @discardableResult
+    public func totalTimeout(_ interval: TimeInterval) -> Self {
+        config.totalTimeout = interval
+        return self
+    }
+
+    // MARK: - Execution
+
+    /// 执行请求
+    /// - Returns: 解码后的响应对象
+    /// - Throws: NetworkError
+    public func execute() async throws -> R.Response {
+        return try await executeWithLifecycle()
+    }
+
+    // MARK: - Private Methods
+
+    /// 构建 URLRequest
+    private func buildURLRequest() async throws -> URLRequest {
+        // 1. 构建 URL
+        var components = URLComponents()
+        components.scheme = request.baseURL.scheme
+        components.host = request.baseURL.host
+        components.port = request.baseURL.port
+
+        // 组合路径
+        let basePath = request.baseURL.path
+        let requestPath = request.path
+        if basePath.hasSuffix("/") || requestPath.hasPrefix("/") {
+            components.path = basePath + requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        } else {
+            components.path = basePath + "/" + requestPath
+        }
+
+        // 添加查询参数
+        if let query = request.query, !query.isEmpty {
+            components.queryItems = query.map { key, value in
+                URLQueryItem(name: key, value: "\(value)")
+            }
+        }
+
+        guard let url = components.url else {
+            throw NetworkError.invalidURL
+        }
+
+        // 2. 创建 URLRequest
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = request.method.rawValue
+
+        // 设置超时
+        if let timeout = request.timeoutInterval {
+            urlRequest.timeoutInterval = timeout
+        }
+
+        // 3. 设置请求头
+        if let headers = request.headers {
+            for (key, value) in headers {
+                urlRequest.setValue(value, forHTTPHeaderField: key)
+            }
+        }
+
+        // 4. 设置请求体
+        if let body = request.body {
+            let encoder = JSONEncoder()
+            urlRequest.httpBody = try encoder.encode(body)
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        // 5. 应用认证
+        urlRequest = try await request.authentication.apply(to: urlRequest, context: authContext)
+
+        return urlRequest
+    }
+
+    /// 解码响应
+    private func decodeResponse(data: Data) throws -> R.Response {
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(R.Response.self, from: data)
+        } catch {
+            throw NetworkError.decodingFailed(error)
+        }
+    }
+
+    /// 创建生命周期绑定的执行任务
+    /// - Returns: 执行任务，会在 owner 释放时自动取消
+    private func executeWithLifecycle() async throws -> R.Response {
+        // 如果绑定到视图，创建可取消的任务
+        if case .view(_) = config.lifecycle {
+            // 使用 withTaskCancellationHandler 支持取消传播
+            // 注意：真正的生命周期绑定（owner 释放时自动取消）
+            // 应该在更高层（如 NetworkClient）通过 Task 管理实现
+            return try await withTaskCancellationHandler {
+                try await self.executeTask()
+            } onCancel: {
+                // 任务被取消时的清理逻辑（由外部 Task.cancel() 触发）
+            }
+        } else {
+            return try await executeTask()
+        }
+    }
+
+    /// 执行核心任务逻辑
+    private func executeTask() async throws -> R.Response {
+        // 1. 构建 URLRequest
+        let urlRequest = try await buildURLRequest()
+
+        // 2. 使用完整信息计算 CacheKey（排序后的 query）
+        let cacheKey = CacheKey.from(
+            method: request.method.rawValue,
+            baseURL: request.baseURL,
+            path: request.path,
+            query: request.query,
+            body: urlRequest.httpBody
+        )
+
+        // 3. 创建 NetworkTask
+        let task = NetworkTask(
+            request: urlRequest,
+            config: config,
+            cacheKey: cacheKey
+        )
+
+        // 4. 执行任务
+        let data = try await executor.execute(task: task)
+
+        // 5. 解码响应
+        let response = try decodeResponse(data: data)
+
+        return response
+    }
+}

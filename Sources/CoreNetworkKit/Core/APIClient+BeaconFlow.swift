@@ -16,11 +16,17 @@ extension APIClient {
     /// 2. 检查业务状态(success字段)
     /// 3. 处理业务失败时的用户反馈
     /// 4. 返回解包后的纯净数据
+    /// 5. 在遇到401错误时自动刷新token并重试
     ///
     /// - Parameter request: BeaconFlow请求实例
     /// - Returns: 解包后的响应数据
     /// - Throws: APIError或BusinessError
     public func send<R: BeaconFlowRequest>(_ request: R) async throws -> R.Response {
+        return try await send(request, allowRetryAfterRefresh: true)
+    }
+    
+    /// 内部发送方法，支持token刷新后重试
+    private func send<R: BeaconFlowRequest>(_ request: R, allowRetryAfterRefresh: Bool) async throws -> R.Response {
         var responseData: Data?
         do {
 
@@ -79,17 +85,38 @@ extension APIClient {
             }
 
         } catch let error as DecodingError {
-            apiLogger.error("❌ [BeaconFlow] 解码失败 \(request.path): \(error.localizedDescription)", tag: "decode-error")
-            
+            apiLogger.error("❌ [BeaconFlow] 解码失败 \(request.path):\n\(DecodingErrorFormatter.format(error))", tag: "decode-error")
+
             // 记录原始数据用于调试
             if let data = responseData, let rawString = String(data: data, encoding: .utf8) {
                 apiLogger.debug("🔍 [BeaconFlow] 解码失败时的原始数据:\n---BEGIN---\n\(rawString)\n---END---", tag: "raw-response")
             }
-            
+
             throw APIError.decodingFailed(error: error, data: responseData)
         } catch let error as BeaconFlowBusinessError {
             // 业务错误直接重新抛出
             throw error
+        } catch let apiError as APIError {
+            // 尝试 token refresh（仅限401错误且允许重试）
+            print("[APIClient+BeaconFlow] 捕获到 APIError: \(apiError)")
+            print("[APIClient+BeaconFlow] allowRetryAfterRefresh = \(allowRetryAfterRefresh)")
+            print("[APIClient+BeaconFlow] shouldAttemptRefresh = \(shouldAttemptRefresh(for: apiError))")
+            print("[APIClient+BeaconFlow] tokenRefresher is nil? \(tokenRefresher == nil)")
+            
+            if allowRetryAfterRefresh,
+               shouldAttemptRefresh(for: apiError),
+               let tokenRefresher = tokenRefresher {
+                do {
+                    print("[APIClient+BeaconFlow] 401 detected, attempting token refresh...")
+                    try await refreshCoordinator.refresh(using: tokenRefresher)
+                    print("[APIClient+BeaconFlow] refresh succeeded, retrying request once")
+                    return try await send(request, allowRetryAfterRefresh: false)
+                } catch {
+                    print("[APIClient+BeaconFlow] refresh failed: \(error)")
+                    throw apiError
+                }
+            }
+            throw apiError
         } catch {
             // 其他错误包装为APIError
             if let apiError = error as? APIError {
@@ -98,6 +125,18 @@ extension APIClient {
                 apiLogger.fault("‼️ [BeaconFlow] 未处理的错误 \(request.path): \(error.localizedDescription)", tag: "unhandled-error")
                 throw APIError.requestFailed(error)
             }
+        }
+    }
+    
+    /// 判断是否应该尝试刷新token
+    private func shouldAttemptRefresh(for error: APIError) -> Bool {
+        switch error {
+        case .serverError(statusCode: 401, _):
+            return true
+        case .authenticationFailed:
+            return true
+        default:
+            return false
         }
     }
 }

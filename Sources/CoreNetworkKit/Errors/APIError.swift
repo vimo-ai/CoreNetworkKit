@@ -34,6 +34,9 @@ public enum APIError: Error, LocalizedError {
         case .networkError(let error):
             return "网络错误: \(error.localizedDescription)"
         case .decodingError(let error):
+            if let decodingError = error as? DecodingError {
+                return "解码服务器响应失败:\n\(DecodingErrorFormatter.format(decodingError))"
+            }
             return "解码服务器响应失败: \(error.localizedDescription)"
         case .serverError(let statusCode, let message):
             return "服务器错误，状态码 \(statusCode): \(message ?? "无消息")"
@@ -42,9 +45,9 @@ public enum APIError: Error, LocalizedError {
         case .noData:
             return "服务器未返回数据。"
         case .decodingFailed(let error, let data):
-            var description = "数据解码失败: \(error.localizedDescription)"
+            var description = "数据解码失败:\n\(DecodingErrorFormatter.format(error))"
             if let data = data, let rawString = String(data: data, encoding: .utf8) {
-                description += "\n原始响应: \(rawString)"
+                description += "原始响应: \(rawString)"
             }
             return description
         case .unknownError:
