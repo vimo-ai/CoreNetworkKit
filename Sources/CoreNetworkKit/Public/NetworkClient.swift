@@ -4,7 +4,7 @@ import MLoggerKit
 /// 网络客户端 - 统一入口
 ///
 /// 提供统一的网络请求接口，支持：
-/// - 单请求执行
+/// - 单请求执行（简单 / 链式配置）
 /// - DAG 编排
 /// - 批量请求
 /// - 轮询调度
@@ -17,14 +17,14 @@ import MLoggerKit
 ///     tokenRefresher: MyTokenRefresher()
 /// )
 ///
-/// // 单请求
+/// // 简单请求（推荐，80% 场景）
+/// let user = try await client.send(GetUserRequest(id: "123"))
+///
+/// // 需要配置时，使用链式 API
 /// let user = try await client.request(GetUserRequest(id: "123"))
 ///     .cache(.cacheFirst(maxAge: 60))
 ///     .retry(.exponential(maxAttempts: 3))
 ///     .execute()
-///
-/// // DAG 编排
-/// let result = try await client.orchestrate { ... }
 ///
 /// // 批量请求
 /// let users = try await client.batch([
@@ -32,14 +32,16 @@ import MLoggerKit
 ///     GetUserRequest(id: "2")
 /// ])
 ///
+/// // DAG 编排
+/// let (user, config) = try await client.orchestrate {
+///     ("user", OrchestratorNode(request: GetUserRequest()))
+///     ("config", OrchestratorNode(request: GetConfigRequest()))
+/// }
+///
 /// // 轮询
-/// client.poll(every: 5) {
-///     GetOrderStatusRequest(orderId: orderId)
-/// }
-/// .onUpdate { status in
-///     print("Status: \(status)")
-/// }
-/// .start()
+/// client.poll(every: 5) { GetOrderStatusRequest(orderId: orderId) }
+///     .onUpdate { status in print("Status: \(status)") }
+///     .start()
 /// ```
 public final class NetworkClient {
     private let logger = LoggerFactory.network
@@ -87,7 +89,30 @@ public final class NetworkClient {
 
     // MARK: - Single Request
 
-    /// 发起单个请求
+    /// 发送请求（便捷方法）
+    ///
+    /// 最简单的请求方式，适用于不需要额外配置的场景：
+    /// ```swift
+    /// let user = try await client.send(GetUserRequest(id: "123"))
+    /// ```
+    ///
+    /// - Parameter request: Request 对象
+    /// - Returns: 解码后的响应
+    /// - Throws: NetworkError 或 VimoBusinessError
+    public func send<R: Request>(_ request: R) async throws -> R.Response {
+        return try await self.request(request).execute()
+    }
+
+    /// 发起单个请求（链式配置）
+    ///
+    /// 需要配置缓存、重试等高级功能时使用：
+    /// ```swift
+    /// let user = try await client.request(GetUserRequest(id: "123"))
+    ///     .cache(.cacheFirst(maxAge: 60))
+    ///     .retry(.exponential(maxAttempts: 3))
+    ///     .execute()
+    /// ```
+    ///
     /// - Parameter request: Request 对象
     /// - Returns: RequestBuilder，支持链式配置
     public func request<R: Request>(_ request: R) -> RequestBuilder<R> {

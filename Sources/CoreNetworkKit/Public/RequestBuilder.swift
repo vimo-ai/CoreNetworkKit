@@ -133,14 +133,9 @@ public final class RequestBuilder<R: Request> {
         components.host = request.baseURL.host
         components.port = request.baseURL.port
 
-        // 组合路径
-        let basePath = request.baseURL.path
-        let requestPath = request.path
-        if basePath.hasSuffix("/") || requestPath.hasPrefix("/") {
-            components.path = basePath + requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        } else {
-            components.path = basePath + "/" + requestPath
-        }
+        // 组合路径（使用与 APIClient 相同的方式）
+        let fullURL = request.baseURL.appendingPathComponent(request.path)
+        components.path = fullURL.path
 
         // 添加查询参数
         if let query = request.query, !query.isEmpty {
