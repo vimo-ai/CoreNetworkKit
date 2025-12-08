@@ -51,6 +51,12 @@ public final class NetworkClient {
     private let tokenStorage: TokenStorage
     private let authContext: AuthenticationContext
 
+    /// 自定义 JSON 解码器
+    public let jsonDecoder: JSONDecoder
+
+    /// 用户反馈处理器（用于 BeaconFlow 业务错误时显示 toast）
+    public let userFeedbackHandler: UserFeedbackHandler?
+
     // MARK: - Initialization
 
     /// 创建网络客户端
@@ -58,10 +64,14 @@ public final class NetworkClient {
     ///   - engine: 网络引擎，默认为 AlamofireEngine
     ///   - tokenStorage: Token 存储
     ///   - tokenRefresher: Token 刷新器（可选）
+    ///   - jsonDecoder: 自定义 JSON 解码器（可选，默认使用标准解码器）
+    ///   - userFeedbackHandler: 用户反馈处理器（可选，用于业务错误时显示 toast）
     public init(
         engine: NetworkEngine,
         tokenStorage: TokenStorage,
-        tokenRefresher: TokenRefresher? = nil
+        tokenRefresher: TokenRefresher? = nil,
+        jsonDecoder: JSONDecoder = JSONDecoder(),
+        userFeedbackHandler: UserFeedbackHandler? = nil
     ) {
         self.tokenStorage = tokenStorage
         self.authContext = AuthenticationContext(tokenStorage: tokenStorage)
@@ -71,6 +81,8 @@ public final class NetworkClient {
             tokenRefresher: tokenRefresher
         )
         self.orchestrator = Orchestrator(executor: executor)
+        self.jsonDecoder = jsonDecoder
+        self.userFeedbackHandler = userFeedbackHandler
     }
 
     // MARK: - Single Request
@@ -82,7 +94,9 @@ public final class NetworkClient {
         return RequestBuilder(
             request: request,
             executor: executor,
-            authContext: authContext
+            authContext: authContext,
+            jsonDecoder: jsonDecoder,
+            userFeedbackHandler: userFeedbackHandler
         )
     }
 

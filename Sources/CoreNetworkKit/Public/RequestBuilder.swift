@@ -22,6 +22,8 @@ public final class RequestBuilder<R: Request> {
 
     private let executor: TaskExecutor
     private let authContext: AuthenticationContext
+    private let jsonDecoder: JSONDecoder
+    private let userFeedbackHandler: UserFeedbackHandler?
 
     // MARK: - Initialization
 
@@ -30,15 +32,21 @@ public final class RequestBuilder<R: Request> {
     ///   - request: Request 对象
     ///   - executor: 任务执行器
     ///   - authContext: 认证上下文
+    ///   - jsonDecoder: JSON 解码器
+    ///   - userFeedbackHandler: 用户反馈处理器（可选）
     public init(
         request: R,
         executor: TaskExecutor,
-        authContext: AuthenticationContext
+        authContext: AuthenticationContext,
+        jsonDecoder: JSONDecoder = JSONDecoder(),
+        userFeedbackHandler: UserFeedbackHandler? = nil
     ) {
         self.request = request
         self.config = TaskConfig()
         self.executor = executor
         self.authContext = authContext
+        self.jsonDecoder = jsonDecoder
+        self.userFeedbackHandler = userFeedbackHandler
     }
 
     // MARK: - Configuration Methods
@@ -177,10 +185,48 @@ public final class RequestBuilder<R: Request> {
     /// 解码响应
     private func decodeResponse(data: Data) throws -> R.Response {
         do {
-            let decoder = JSONDecoder()
-            return try decoder.decode(R.Response.self, from: data)
-        } catch {
+            // 检查是否为 VimoRequest，需要解包
+            if request is any VimoRequest {
+                return try decodeVimoResponse(data: data)
+            } else {
+                // 普通请求，直接解码
+                return try jsonDecoder.decode(R.Response.self, from: data)
+            }
+        } catch let error as VimoBusinessError {
+            // Vimo 业务错误，显示 toast 后重新抛出
+            userFeedbackHandler?.showError(message: error.message)
+            throw error
+        } catch let error as DecodingError {
             throw NetworkError.decodingFailed(error)
+        } catch {
+            throw error
+        }
+    }
+
+    /// 解码 Vimo 响应（自动解包 WrappedResponse）
+    private func decodeVimoResponse(data: Data) throws -> R.Response {
+        // 1. 解码为包装响应
+        let wrappedResponse = try jsonDecoder.decode(VimoWrappedResponse<R.Response>.self, from: data)
+
+        // 2. 检查业务状态
+        if !wrappedResponse.success {
+            // 业务失败，抛出业务错误
+            throw VimoBusinessError(message: wrappedResponse.message, timestamp: wrappedResponse.timestamp)
+        }
+
+        // 3. 返回解包后的数据
+        if let responseData = wrappedResponse.data {
+            return responseData
+        } else {
+            // 对于操作类 API（EmptyResponse），创建空实例
+            if R.Response.self == EmptyResponse.self {
+                return EmptyResponse() as! R.Response
+            } else {
+                // 其他类型要求 data 字段必须存在
+                throw NetworkError.decodingFailed(
+                    DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Missing required data field in Vimo response"))
+                )
+            }
         }
     }
 
