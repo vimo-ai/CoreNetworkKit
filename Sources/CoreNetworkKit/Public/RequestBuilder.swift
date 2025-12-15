@@ -165,10 +165,19 @@ public final class RequestBuilder<R: Request> {
         }
 
         // 4. 设置请求体
+        // 对于 POST/PUT/PATCH/DELETE 请求，如果设置了 Content-Type: application/json 但没有 body，
+        // 需要发送空 JSON 对象 {}，否则某些后端框架（如 NestJS）会报错
         if let body = request.body {
             let encoder = JSONEncoder()
             urlRequest.httpBody = try encoder.encode(body)
-            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if urlRequest.value(forHTTPHeaderField: "Content-Type") == nil {
+                urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+        } else if request.method == .post || request.method == .put || request.method == .patch || request.method == .delete {
+            // body 为 nil，但如果设置了 Content-Type: application/json，需要发送空对象
+            if urlRequest.value(forHTTPHeaderField: "Content-Type") == "application/json" {
+                urlRequest.httpBody = Data("{}".utf8)
+            }
         }
 
         // 5. 应用认证
