@@ -10,12 +10,10 @@
 
 ### 1.1 背景
 
-现有 CoreNetworkKit 基于 URLSession 实现，功能较为基础，缺少：
-- 请求生命周期管理（页面切换时的取消控制）
-- 流程编排能力（串行、并发、DAG 依赖）
-- 请求控制（防抖、去重、节流）
-- 缓存策略
-- 请求聚合（批量接口合并）
+CoreNetworkKit 是一个完整的 Swift 网络层解决方案，支持：
+- **REST API** - 类型安全的请求/响应，Token 自动刷新
+- **SSE Streaming** - Server-Sent Events，用于 AI 流式对话
+- **WebSocket** - Socket.IO 实时通信
 
 ### 1.2 设计目标
 
@@ -30,8 +28,17 @@
 | 组件 | 选型 | 理由 |
 |-----|------|-----|
 | 底层引擎 | Alamofire | 成熟稳定，功能丰富，无需造轮子 |
+| WebSocket | Socket.IO | 支持房间、自动重连、心跳等高级功能 |
 | 日志 | MLoggerKit | 复用现有基础设施 |
 | 并发模型 | Swift Concurrency | async/await，原生支持 |
+
+### 1.4 三种通信方式
+
+| 方式 | 协议 | 客户端 | 适用场景 |
+|-----|------|--------|---------|
+| REST | Request | APIClient | 常规 API 调用 |
+| SSE | StreamRequest | StreamClient | AI 流式响应 |
+| WebSocket | - | WebSocketClient | 实时双向通信 |
 
 ---
 
@@ -1468,4 +1475,273 @@ do {
 } catch {
     // 其他错误
 }
+```
+
+---
+
+## 十四、SSE Streaming (AI 流式响应)
+
+### 14.1 概述
+
+SSE (Server-Sent Events) 用于处理服务器推送的流式数据，主要应用于 AI 对话场景。
+
+### 14.2 核心组件
+
+#### StreamRequest 协议
+
+```swift
+public protocol StreamRequest: Request {
+    /// 流式响应中每个数据块的类型
+    associatedtype Chunk: Decodable
+
+    /// SSE 数据行前缀，默认 "data:"
+    var streamDataPrefix: String { get }
+
+    /// 流结束标记，默认 "[DONE]"
+    var streamDoneMarker: String { get }
+}
+```
+
+#### StreamClient
+
+```swift
+public final class StreamClient {
+    /// 发起流式请求，返回 AsyncThrowingStream
+    public func stream<R: StreamRequest>(_ request: R) -> AsyncThrowingStream<R.Chunk, Error>
+
+    /// 发起流式请求，通过回调处理
+    public func stream<R: StreamRequest>(
+        _ request: R,
+        onChunk: @escaping (R.Chunk) -> Void,
+        onComplete: @escaping () -> Void,
+        onError: @escaping (Error) -> Void
+    ) -> Task<Void, Never>
+}
+```
+
+### 14.3 认证支持
+
+StreamClient 复用 `AuthenticationStrategy` 协议：
+
+```swift
+struct AIStreamRequest: StreamRequest {
+    var authentication: AuthenticationStrategy {
+        BearerTokenAuthenticationStrategy()  // JWT Bearer Token
+    }
+}
+```
+
+### 14.4 使用示例
+
+```swift
+// 定义请求
+struct AICompletionRequest: StreamRequest {
+    typealias Response = EmptyBody
+    typealias Chunk = AIChunk
+
+    let messages: [Message]
+
+    var baseURL: URL { URL(string: "https://api.openai.com")! }
+    var path: String { "/v1/chat/completions" }
+    var method: HTTPMethod { .post }
+    var body: RequestBody? { RequestBody(messages: messages, stream: true) }
+    var authentication: AuthenticationStrategy { BearerTokenAuthenticationStrategy() }
+}
+
+// 使用 for-await
+let client = StreamClient(tokenStorage: myTokenStorage)
+for try await chunk in client.stream(AICompletionRequest(messages: [...])) {
+    print(chunk.delta.content ?? "")
+}
+
+// 使用回调
+client.stream(
+    AICompletionRequest(messages: [...]),
+    onChunk: { chunk in updateUI(chunk) },
+    onComplete: { finishLoading() },
+    onError: { error in showError(error) }
+)
+```
+
+---
+
+## 十五、WebSocket (Socket.IO)
+
+### 15.1 概述
+
+WebSocket 模块基于 Socket.IO 实现，支持：
+- 多种认证方式 (Query Param / Bearer Header / Custom Header)
+- 类型安全的事件监听
+- 房间管理
+- 自动重连
+- SwiftUI 状态集成
+
+### 15.2 核心组件
+
+#### WebSocketConfiguration
+
+```swift
+public struct WebSocketConfiguration {
+    let url: URL
+    let token: String?
+    let authMethod: WebSocketAuthMethod
+    let enableLogging: Bool
+    let reconnects: Bool
+    let reconnectAttempts: Int
+    let reconnectWait: TimeInterval
+    let extraParams: [String: Any]?
+    let extraHeaders: [String: String]?
+}
+
+public enum WebSocketAuthMethod {
+    case queryParam(key: String = "token")  // ?token=xxx
+    case bearerHeader                        // Authorization: Bearer xxx
+    case customHeader(key: String)           // X-Auth-Token: xxx
+    case none
+}
+```
+
+#### WebSocketClient
+
+```swift
+public final class WebSocketClient: ObservableObject {
+    // 状态
+    @Published var connectionState: WebSocketConnectionState
+    @Published var isConnected: Bool
+    @Published var lastError: Error?
+
+    // 连接管理
+    func connect()
+    func disconnect()
+    func reconnect(withToken: String)
+
+    // 事件监听 (类型安全)
+    func on<T: Decodable>(_ event: String, handler: @escaping (T) -> Void)
+    func off(_ event: String)
+
+    // 发送消息
+    func emit<T: Encodable>(_ event: String, data: T)
+    func emit(_ event: String, data: [String: Any])
+
+    // 房间管理
+    func join(room: String, params: [String: Any])
+    func leave(room: String)
+}
+```
+
+### 15.3 认证方式
+
+```swift
+// 方式 1: Token 作为 query 参数 (默认)
+let client = WebSocketClient(url: serverURL, token: "xxx")
+// 连接: ws://server?token=xxx
+
+// 方式 2: JWT Bearer Token (Header)
+let client = WebSocketClient(url: serverURL, bearerToken: "jwt")
+// 连接时 Header: Authorization: Bearer jwt
+
+// 方式 3: 自定义 Header
+let config = WebSocketConfiguration(
+    url: serverURL,
+    token: "xxx",
+    authMethod: .customHeader(key: "X-Auth-Token")
+)
+let client = WebSocketClient(configuration: config)
+
+// 方式 4: 完整配置
+let config = WebSocketConfiguration(
+    url: serverURL,
+    token: "jwt",
+    authMethod: .bearerHeader,
+    extraParams: ["clientType": "ios"],
+    extraHeaders: ["X-Client-Version": "1.0"]
+)
+```
+
+### 15.4 使用示例
+
+```swift
+// 初始化
+let wsClient = WebSocketClient(url: serverURL, bearerToken: jwtToken)
+
+// 监听事件
+wsClient.on("message:new") { (message: ChatMessage) in
+    print("New message: \(message)")
+}
+
+wsClient.on("user:joined") { (user: User) in
+    print("\(user.name) joined")
+}
+
+// 连接
+wsClient.connect()
+
+// 加入房间
+wsClient.join(room: "session-123", params: ["projectPath": "/path"])
+
+// 发送消息
+wsClient.emit("send", data: ["text": "Hello"])
+wsClient.emit("typing", data: TypingEvent(isTyping: true))
+
+// SwiftUI 集成
+struct ChatView: View {
+    @ObservedObject var wsClient: WebSocketClient
+
+    var body: some View {
+        VStack {
+            if wsClient.isConnected {
+                Text("Connected")
+            } else {
+                Text("Disconnected")
+            }
+        }
+    }
+}
+
+// Token 刷新后重连
+wsClient.reconnect(withToken: newToken)
+
+// 断开连接
+wsClient.disconnect()
+```
+
+### 15.5 错误处理
+
+```swift
+public enum WebSocketError: Error {
+    case connectionError(String)
+    case notConnected
+    case encodingFailed
+    case decodingFailed
+}
+```
+
+---
+
+## 十六、模块结构 (完整)
+
+```
+CoreNetworkKit/
+├── Sources/CoreNetworkKit/
+│   ├── Core/
+│   │   ├── APIClient.swift           # REST 客户端
+│   │   ├── StreamClient.swift        # SSE 流式客户端
+│   │   └── ...
+│   │
+│   ├── WebSocket/
+│   │   ├── WebSocketClient.swift     # Socket.IO 封装
+│   │   └── WebSocketEvent.swift      # 配置和类型定义
+│   │
+│   ├── Protocols/
+│   │   ├── Request.swift             # REST 请求协议
+│   │   ├── StreamRequest.swift       # SSE 请求协议
+│   │   ├── AuthenticationStrategy.swift
+│   │   └── ...
+│   │
+│   ├── Engine/
+│   │   └── URLSessionEngine.swift
+│   │
+│   └── ...
+│
+└── Package.swift                      # 依赖: Alamofire, Socket.IO
 ```

@@ -42,8 +42,19 @@
 // (WrappedResponse, BusinessError, UserFeedbackHandler are exported directly from Utilities/ResponseWrapper.swift)
 // (BeaconFlowWrappedResponse, BeaconFlowBusinessError are exported directly from Utilities/BeaconFlowWrapper.swift)
 
+// Stream (SSE)
+// (StreamRequest protocol is exported directly from Protocols/StreamRequest.swift)
+// (StreamClient is exported directly from Core/StreamClient.swift)
+// (StreamError is exported directly from Core/StreamClient.swift)
+
+// WebSocket
+// (WebSocketClient is exported directly from WebSocket/WebSocketClient.swift)
+// (WebSocketConfiguration is exported directly from WebSocket/WebSocketEvent.swift)
+// (WebSocketConnectionState is exported directly from WebSocket/WebSocketEvent.swift)
+// (WebSocketError is exported directly from WebSocket/WebSocketClient.swift)
+
 // MARK: - Version Information
 public struct CoreNetworkKitVersion {
-    public static let version = "1.0.0"
+    public static let version = "2.0.0"
     public static let buildNumber = "1"
 }

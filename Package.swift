@@ -15,14 +15,16 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/vimo-ai/MLoggerKit.git", from: "0.0.1"),
-        .package(url: "https://github.com/Alamofire/Alamofire.git", from: "5.8.0")
+        .package(url: "https://github.com/Alamofire/Alamofire.git", from: "5.8.0"),
+        .package(url: "https://github.com/socketio/socket.io-client-swift.git", from: "16.1.0")
     ],
     targets: [
         .target(
             name: "CoreNetworkKit",
             dependencies: [
                 "MLoggerKit",
-                .product(name: "Alamofire", package: "Alamofire")
+                .product(name: "Alamofire", package: "Alamofire"),
+                .product(name: "SocketIO", package: "socket.io-client-swift")
             ]),
         .testTarget(
             name: "CoreNetworkKitTests",
