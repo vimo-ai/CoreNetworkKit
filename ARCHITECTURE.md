@@ -1718,7 +1718,248 @@ public enum WebSocketError: Error {
 
 ---
 
-## 十六、模块结构 (完整)
+## 十六、mTLS 双向认证
+
+### 16.1 概述
+
+mTLS (Mutual TLS) 是一种双向认证机制，客户端和服务端互相验证对方的证书。CoreNetworkKit 提供了完整的 mTLS 支持：
+
+- **客户端证书** - 向服务端证明客户端身份
+- **服务端验证** - 验证服务端证书（支持自签名）
+- **按域名配置** - 不同域名可使用不同策略
+- **优雅降级** - 证书不可用时可回退到普通 TLS
+
+### 16.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   CertificateProvider (协议)                 │
+│  - isAvailable: Bool                                        │
+│  - clientCredential() throws -> URLCredential               │
+│  - evaluateServerTrust(_:for:) -> Bool                      │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+          ▼                ▼                ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ BundleCertificate│ │KeychainCertificate│ │ RemoteCertificate │
+│    Provider     │ │    Provider     │ │    Provider     │
+│  (Bundle 内置)   │ │  (Keychain存储) │ │   (远程下发)     │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   MTLSConfiguration                          │
+│  - certificateProvider: CertificateProvider                 │
+│  - pinnedDomains: Set<String>?                              │
+│  - allowFallback: Bool                                      │
+│  - serverTrustMode: ServerTrustMode                         │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   MTLSSessionDelegate                        │
+│  - 处理 NSURLAuthenticationMethodServerTrust                │
+│  - 处理 NSURLAuthenticationMethodClientCertificate          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   AlamofireEngine                            │
+│  - init(mTLS: MTLSConfiguration)                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 16.3 核心组件
+
+#### CertificateProvider 协议
+
+```swift
+public protocol CertificateProvider: Sendable {
+    /// 证书是否可用
+    var isAvailable: Bool { get }
+
+    /// 获取客户端身份凭证
+    func clientCredential() throws -> URLCredential
+
+    /// 验证服务端信任
+    func evaluateServerTrust(_ trust: SecTrust, for host: String) -> Bool
+}
+```
+
+#### MTLSConfiguration
+
+```swift
+public struct MTLSConfiguration: Sendable {
+    /// 证书提供者
+    let certificateProvider: CertificateProvider
+
+    /// 需要 mTLS 的域名列表（nil = 所有域名）
+    let pinnedDomains: Set<String>?
+
+    /// 证书不可用时是否回退到普通 TLS
+    let allowFallback: Bool
+
+    /// 服务端证书验证模式
+    let serverTrustMode: ServerTrustMode
+}
+
+public enum ServerTrustMode: Sendable {
+    case systemDefault      // 系统默认验证
+    case customEvaluation   // 自定义验证（支持自签名）
+    case disabled           // 禁用验证（仅开发环境）
+}
+```
+
+#### CertificateError
+
+```swift
+public enum CertificateError: Error {
+    case fileNotFound(String)           // 证书文件未找到
+    case invalidPassword                 // P12 密码错误
+    case invalidFormat(String)           // 证书格式无效
+    case importFailed(OSStatus)          // 导入失败
+    case identityNotFound                // 身份凭证未找到
+    case serverTrustFailed(host:reason:) // 服务端验证失败
+    case clientCertificateRequired       // 需要客户端证书
+    case certificateExpired(Date)        // 证书已过期
+}
+```
+
+### 16.4 使用示例
+
+#### 基本用法
+
+```swift
+// 1. 创建证书提供者（从 Bundle 加载）
+let provider = try BundleCertificateProvider(
+    p12Name: "client-cert",           // client-cert.p12
+    p12Password: "secret",            // P12 密码
+    caName: "ca-cert"                 // ca-cert.crt（自签名服务端需要）
+)
+
+// 2. 创建 mTLS 配置
+let mTLSConfig = MTLSConfiguration(
+    certificateProvider: provider,
+    pinnedDomains: ["api.example.com", "secure.example.com"],
+    allowFallback: false
+)
+
+// 3. 创建支持 mTLS 的引擎
+let engine = AlamofireEngine(mTLS: mTLSConfig)
+
+// 4. 创建 APIClient
+let client = APIClient(engine: engine, tokenStorage: myTokenStorage)
+
+// 5. 正常发送请求（自动处理证书）
+let response = try await client.send(MyRequest())
+```
+
+#### 开发环境配置
+
+```swift
+// 开发环境：允许回退，支持自签名证书
+let config = MTLSConfiguration.development(
+    certificateProvider: provider,
+    pinnedDomains: ["dev.example.com"]
+)
+```
+
+#### 生产环境配置
+
+```swift
+// 生产环境：不允许回退，严格验证
+let config = MTLSConfiguration.production(
+    certificateProvider: provider,
+    pinnedDomains: ["api.example.com"]
+)
+```
+
+#### 安全的密码管理
+
+```swift
+// ⚠️ 错误：硬编码密码
+let provider = try BundleCertificateProvider(
+    p12Name: "client",
+    p12Password: "hardcoded-password"  // 不安全！
+)
+
+// ✅ 正确：从 Keychain 读取密码
+let password = try KeychainManager.getP12Password()
+let provider = try BundleCertificateProvider(
+    p12Name: "client",
+    p12Password: password
+)
+```
+
+#### 多 CA 证书支持
+
+```swift
+// 加载多个 CA 证书（证书链场景）
+let provider = try BundleCertificateProvider.withMultipleCAs(
+    p12Name: "client",
+    p12Password: password,
+    caNames: ["root-ca", "intermediate-ca"]
+)
+```
+
+### 16.5 证书文件格式
+
+| 格式 | 扩展名 | 用途 |
+|-----|--------|------|
+| PKCS#12 | .p12 | 客户端证书（包含私钥） |
+| DER | .cer, .der | CA 证书（二进制） |
+| PEM | .crt, .pem | CA 证书（Base64） |
+
+### 16.6 证书准备
+
+```bash
+# 生成客户端证书（P12 格式）
+openssl pkcs12 -export \
+    -in client.crt \
+    -inkey client.key \
+    -out client.p12 \
+    -password pass:secret
+
+# 将 PEM 转换为 DER
+openssl x509 -in ca.pem -outform DER -out ca.cer
+```
+
+### 16.7 错误处理
+
+```swift
+do {
+    let provider = try BundleCertificateProvider(
+        p12Name: "client",
+        p12Password: password,
+        caName: "ca"
+    )
+} catch CertificateError.fileNotFound(let filename) {
+    print("证书文件未找到: \(filename)")
+} catch CertificateError.invalidPassword {
+    print("P12 密码错误")
+} catch CertificateError.importFailed(let status) {
+    print("证书导入失败，错误码: \(status)")
+} catch {
+    print("未知错误: \(error)")
+}
+```
+
+### 16.8 调试日志
+
+mTLS 模块会输出关键日志：
+
+```
+✅ [mTLS] 客户端证书加载成功
+✅ [mTLS] CA 证书加载成功 (PEM)
+❌ [mTLS] 服务端证书验证失败: api.example.com
+⚠️ [mTLS] 客户端证书不可用，回退到普通模式
+```
+
+---
+
+## 十七、模块结构 (完整)
 
 ```
 CoreNetworkKit/
@@ -1727,6 +1968,13 @@ CoreNetworkKit/
 │   │   ├── APIClient.swift           # REST 客户端
 │   │   ├── StreamClient.swift        # SSE 流式客户端
 │   │   └── ...
+│   │
+│   ├── MTLS/                         # mTLS 双向认证
+│   │   ├── CertificateError.swift    # 证书错误类型
+│   │   ├── CertificateProvider.swift # 证书提供者协议
+│   │   ├── MTLSConfiguration.swift   # mTLS 配置
+│   │   ├── BundleCertificateProvider.swift  # Bundle 证书实现
+│   │   └── MTLSSessionDelegate.swift # 证书挑战处理
 │   │
 │   ├── WebSocket/
 │   │   ├── WebSocketClient.swift     # Socket.IO 封装
@@ -1739,7 +1987,7 @@ CoreNetworkKit/
 │   │   └── ...
 │   │
 │   ├── Engine/
-│   │   └── URLSessionEngine.swift
+│   │   └── AlamofireEngine.swift     # 支持 mTLS 的网络引擎
 │   │
 │   └── ...
 │
