@@ -298,11 +298,19 @@ public final class NetworkClient {
 
         let basePath = request.baseURL.path
         let requestPath = request.path
+
+        // 拼接 path，确保以 "/" 开头（URLComponents 要求）
+        var fullPath: String
         if basePath.hasSuffix("/") || requestPath.hasPrefix("/") {
-            components.path = basePath + requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            fullPath = basePath + requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         } else {
-            components.path = basePath + "/" + requestPath
+            fullPath = basePath + "/" + requestPath
         }
+        // 确保 path 以 "/" 开头
+        if !fullPath.hasPrefix("/") {
+            fullPath = "/" + fullPath
+        }
+        components.path = fullPath
 
         if let query = request.query, !query.isEmpty {
             components.queryItems = query.map { key, value in
