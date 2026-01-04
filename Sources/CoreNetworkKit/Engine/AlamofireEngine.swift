@@ -6,15 +6,55 @@ import Alamofire
 /// 特性：
 /// - 成熟稳定的底层实现
 /// - 自动处理 SSL/TLS
+/// - 支持 mTLS 双向认证
 /// - 请求/响应验证
 /// - 支持取消传播（协作式取消）
+///
+/// ## 基本用法
+///
+/// ```swift
+/// // 普通模式
+/// let engine = AlamofireEngine()
+///
+/// // mTLS 模式
+/// let provider = try BundleCertificateProvider(
+///     p12Name: "client",
+///     p12Password: "secret",
+///     caName: "ca"
+/// )
+/// let engine = AlamofireEngine(mTLS: MTLSConfiguration(certificateProvider: provider))
+/// ```
 public final class AlamofireEngine: NetworkEngine {
     private let session: Session
+    private let mTLSConfig: MTLSConfiguration?
 
     /// 创建 Alamofire 引擎
     /// - Parameter configuration: URLSession 配置，默认使用 .default
     public init(configuration: URLSessionConfiguration = .default) {
+        self.mTLSConfig = nil
         self.session = Session(configuration: configuration)
+    }
+
+    /// 创建支持 mTLS 的 Alamofire 引擎
+    ///
+    /// - Parameters:
+    ///   - configuration: URLSession 配置
+    ///   - mTLS: mTLS 配置
+    public init(configuration: URLSessionConfiguration = .default, mTLS: MTLSConfiguration) {
+        self.mTLSConfig = mTLS
+
+        // 创建自定义 SessionDelegate 处理证书挑战
+        let delegate = MTLSSessionDelegate(configuration: mTLS)
+
+        self.session = Session(
+            configuration: configuration,
+            delegate: delegate
+        )
+    }
+
+    /// 是否启用了 mTLS
+    public var isMTLSEnabled: Bool {
+        mTLSConfig != nil
     }
 
     /// 发送网络请求，支持取消传播
