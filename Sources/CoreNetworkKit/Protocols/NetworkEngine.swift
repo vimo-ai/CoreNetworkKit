@@ -5,11 +5,32 @@ import Foundation
 /// 这是网络层解耦的核心。任何遵守此协议的类（如默认的 `URLSessionEngine` 或测试用的 `MockNetworkEngine`）
 /// 都可以被 `APIClient` 用来执行网络请求。
 public protocol NetworkEngine {
-    
+
     /// 执行一个网络请求并返回原始数据和URL响应。
     ///
     /// - Parameter request: 一个 `URLRequest` 对象，由 `APIClient` 根据 `Request` 协议构建。
     /// - Returns: 一个包含 `Data` 和 `URLResponse` 的元组。
     /// - Throws: 如果网络请求失败（例如，无网络连接，DNS错误），将抛出错误。
     func performRequest(_ request: URLRequest) async throws -> (Data, URLResponse)
+
+    /// 执行流式请求（用于 SSE 等场景）
+    ///
+    /// - Parameter request: 一个 `URLRequest` 对象
+    /// - Returns: 异步数据流
+    func streamRequest(_ request: URLRequest) -> AsyncThrowingStream<Data, Error>
+}
+
+// MARK: - Default Implementation
+
+public extension NetworkEngine {
+    /// 默认实现：不支持流式请求
+    func streamRequest(_ request: URLRequest) -> AsyncThrowingStream<Data, Error> {
+        return AsyncThrowingStream { continuation in
+            continuation.finish(throwing: NetworkError.unknown(NSError(
+                domain: "NetworkEngine",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "This engine does not support streaming"]
+            )))
+        }
+    }
 }

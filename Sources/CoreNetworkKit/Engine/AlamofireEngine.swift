@@ -138,4 +138,43 @@ public final class AlamofireEngine: NetworkEngine {
         // 其次从响应头中获取
         return response?.allHeaderFields["X-Error-Message"] as? String
     }
+
+    // MARK: - Streaming (SSE)
+
+    /// 执行流式请求（用于 SSE）
+    /// - Parameter request: URLRequest 对象
+    /// - Returns: 异步数据流，逐块返回数据
+    public func streamRequest(_ request: URLRequest) -> AsyncThrowingStream<Data, Error> {
+        return AsyncThrowingStream { continuation in
+            // 创建流式请求
+            let streamRequest = session.streamRequest(request)
+
+            // 设置取消处理
+            continuation.onTermination = { @Sendable _ in
+                streamRequest.cancel()
+            }
+
+            // 启动流式接收
+            streamRequest
+                .validate()
+                .responseStream { stream in
+                    switch stream.event {
+                    case .stream(let result):
+                        // Alamofire DataStreamRequest.Stream.Event 的 Result 类型是 Result<Data, Never>
+                        // Never 表示永远不会失败，错误通过 complete 事件传递
+                        switch result {
+                        case .success(let data):
+                            continuation.yield(data)
+                        }
+
+                    case .complete(let completion):
+                        if let error = completion.error {
+                            continuation.finish(throwing: self.mapAlamofireError(error, response: completion.response, data: nil))
+                        } else {
+                            continuation.finish()
+                        }
+                    }
+                }
+        }
+    }
 }

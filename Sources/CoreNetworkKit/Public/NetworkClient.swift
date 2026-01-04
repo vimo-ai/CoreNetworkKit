@@ -5,6 +5,7 @@ import MLoggerKit
 ///
 /// 提供统一的网络请求接口，支持：
 /// - 单请求执行（简单 / 链式配置）
+/// - SSE 流式请求
 /// - DAG 编排
 /// - 批量请求
 /// - 轮询调度
@@ -25,6 +26,12 @@ import MLoggerKit
 ///     .cache(.cacheFirst(maxAge: 60))
 ///     .retry(.exponential(maxAttempts: 3))
 ///     .execute()
+///
+/// // SSE 流式请求（AI 对话等场景）
+/// let stream = try await client.stream(ChatRequest(message: "Hello"))
+/// for try await event in stream {
+///     print(event.data)
+/// }
 ///
 /// // 批量请求
 /// let users = try await client.batch([
@@ -48,6 +55,7 @@ public final class NetworkClient {
 
     // MARK: - Dependencies
 
+    private let engine: NetworkEngine
     private let executor: TaskExecutor
     private let orchestrator: Orchestrator
     private let tokenStorage: TokenStorage
@@ -56,7 +64,7 @@ public final class NetworkClient {
     /// 自定义 JSON 解码器
     public let jsonDecoder: JSONDecoder
 
-    /// 用户反馈处理器（用于 BeaconFlow 业务错误时显示 toast）
+    /// 用户反馈处理器（用于 Vimo 业务错误时显示 toast）
     public let userFeedbackHandler: UserFeedbackHandler?
 
     // MARK: - Initialization
@@ -75,6 +83,7 @@ public final class NetworkClient {
         jsonDecoder: JSONDecoder = JSONDecoder(),
         userFeedbackHandler: UserFeedbackHandler? = nil
     ) {
+        self.engine = engine
         self.tokenStorage = tokenStorage
         self.authContext = AuthenticationContext(tokenStorage: tokenStorage)
         self.executor = TaskExecutor(
@@ -232,6 +241,104 @@ public final class NetworkClient {
         _ request: R
     ) -> RequestBuilder<R> {
         return self.request(request).lifecycle(.view(owner: owner))
+    }
+
+    // MARK: - SSE Streaming
+
+    /// 发起 SSE 流式请求（原始事件流）
+    ///
+    /// 返回 SSE 事件流，适用于需要处理原始事件的场景：
+    /// ```swift
+    /// let stream = try await client.stream(ChatStreamRequest(message: "Hello"))
+    /// for try await event in stream {
+    ///     print("Event: \(event.event), Data: \(event.data)")
+    /// }
+    /// ```
+    ///
+    /// - Parameter request: Request 对象
+    /// - Returns: SSE 事件流
+    public func stream<R: Request>(_ request: R) async throws -> SSEStream {
+        let urlRequest = try await buildStreamRequest(request)
+        let dataStream = engine.streamRequest(urlRequest)
+        return SSEStream(dataStream: dataStream)
+    }
+
+    /// 发起 SSE 流式请求（类型化事件流）
+    ///
+    /// 自动将 SSE data 解码为指定类型：
+    /// ```swift
+    /// let stream: TypedSSEStream<ChatChunk> = try await client.stream(ChatStreamRequest(message: "Hello"))
+    /// for try await chunk in stream {
+    ///     print(chunk.text)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - request: Request 对象
+    ///   - type: 响应数据类型
+    /// - Returns: 类型化 SSE 事件流
+    public func stream<R: Request, T: Decodable>(
+        _ request: R,
+        as type: T.Type
+    ) async throws -> TypedSSEStream<T> {
+        let urlRequest = try await buildStreamRequest(request)
+        let dataStream = engine.streamRequest(urlRequest)
+        return TypedSSEStream<T>(dataStream: dataStream, decoder: jsonDecoder)
+    }
+
+    // MARK: - Private Helpers
+
+    /// 构建流式请求的 URLRequest
+    private func buildStreamRequest<R: Request>(_ request: R) async throws -> URLRequest {
+        // 构建 URL
+        var components = URLComponents()
+        components.scheme = request.baseURL.scheme
+        components.host = request.baseURL.host
+        components.port = request.baseURL.port
+
+        let basePath = request.baseURL.path
+        let requestPath = request.path
+        if basePath.hasSuffix("/") || requestPath.hasPrefix("/") {
+            components.path = basePath + requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        } else {
+            components.path = basePath + "/" + requestPath
+        }
+
+        if let query = request.query, !query.isEmpty {
+            components.queryItems = query.map { key, value in
+                URLQueryItem(name: key, value: "\(value)")
+            }
+        }
+
+        guard let url = components.url else {
+            throw NetworkError.invalidURL
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = request.method.rawValue
+
+        // 设置 SSE 相关头
+        urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        urlRequest.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+        // 设置自定义头
+        if let headers = request.headers {
+            for (key, value) in headers {
+                urlRequest.setValue(value, forHTTPHeaderField: key)
+            }
+        }
+
+        // 设置请求体
+        if let body = request.body {
+            let encoder = JSONEncoder()
+            urlRequest.httpBody = try encoder.encode(body)
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        // 应用认证
+        urlRequest = try await request.authentication.apply(to: urlRequest, context: authContext)
+
+        return urlRequest
     }
 }
 
