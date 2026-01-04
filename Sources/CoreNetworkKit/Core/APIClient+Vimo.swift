@@ -113,8 +113,14 @@ extension APIClient {
                     return try await send(request, allowRetryAfterRefresh: false)
                 } catch {
                     print("[APIClient+BeaconFlow] refresh failed: \(error)")
+                    // Token 刷新失败，通知 App 用户需要重新登录
+                    userFeedbackHandler?.handleAuthenticationFailure()
                     throw apiError
                 }
+            }
+            // 401 错误但没有配置 tokenRefresher，直接通知认证失败
+            if shouldAttemptRefresh(for: apiError) {
+                userFeedbackHandler?.handleAuthenticationFailure()
             }
             throw apiError
         } catch {

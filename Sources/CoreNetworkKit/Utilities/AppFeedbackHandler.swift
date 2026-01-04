@@ -85,7 +85,12 @@ public class AppFeedbackHandler: UserFeedbackHandler, ObservableObject {
         let prefix = logPrefix(for: level)
         print("\(prefix) [BeaconFlow] \(message)")
     }
-    
+
+    public func handleAuthenticationFailure() {
+        log(level: .warning, message: "Authentication failed - user should be logged out")
+        // 子类或外部可以通过回调处理具体的登出逻辑
+    }
+
     // MARK: - Private Helpers
     
     private func presentToast(message: String, type: ToastType) {

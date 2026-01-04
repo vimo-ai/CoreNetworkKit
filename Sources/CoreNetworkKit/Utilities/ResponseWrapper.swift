@@ -58,15 +58,19 @@ public struct BusinessError: LocalizedError {
 public protocol UserFeedbackHandler {
     /// 显示成功消息
     func showSuccess(message: String)
-    
+
     /// 显示错误消息
     func showError(message: String)
-    
+
     /// 显示警告消息
     func showWarning(message: String)
-    
+
     /// 记录日志
     func log(level: LogLevel, message: String)
+
+    /// 处理认证失败（401 且 token 刷新失败时调用）
+    /// 实现方应清除本地登录状态并跳转到登录页
+    func handleAuthenticationFailure()
 }
 
 /// 日志级别
@@ -82,20 +86,24 @@ public enum LogLevel {
 /// 默认的用户反馈处理器（仅日志，不显示Toast）
 public class DefaultUserFeedbackHandler: UserFeedbackHandler {
     public init() {}
-    
+
     public func showSuccess(message: String) {
         log(level: .info, message: "Success: \(message)")
     }
-    
+
     public func showError(message: String) {
         log(level: .error, message: "Error: \(message)")
     }
-    
+
     public func showWarning(message: String) {
         log(level: .warning, message: "Warning: \(message)")
     }
-    
+
     public func log(level: LogLevel, message: String) {
         print("[\(level)] \(message)")
+    }
+
+    public func handleAuthenticationFailure() {
+        log(level: .warning, message: "Authentication failed - user should be logged out")
     }
 }
