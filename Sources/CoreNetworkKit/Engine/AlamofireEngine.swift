@@ -154,9 +154,10 @@ public final class AlamofireEngine: NetworkEngine {
                 streamRequest.cancel()
             }
 
-            // 启动流式接收
+            // 启动流式接收（SSE 返回 text/event-stream，需要显式接受）
             streamRequest
-                .validate()
+                .validate(statusCode: 200..<300)
+                .validate(contentType: ["text/event-stream", "application/json", "text/plain"])
                 .responseStream { stream in
                     switch stream.event {
                     case .stream(let result):
