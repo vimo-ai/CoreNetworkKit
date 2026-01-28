@@ -34,7 +34,16 @@ public final class WebSocketClient: ObservableObject {
     private let logger = LoggerFactory.network
     private let decoder = JSONDecoder()
 
-    /// 事件处理器存储
+    /// 带 token 的事件处理器
+    private struct TokenizedHandler {
+        let token: EventHandlerToken
+        let handler: (Any) -> Void
+    }
+
+    /// 事件处理器存储（使用 TokenizedHandler）
+    private var tokenizedHandlers: [String: [TokenizedHandler]] = [:]
+
+    /// 旧 API 事件处理器存储（兼容）
     private var eventHandlers: [String: [(Any) -> Void]] = [:]
 
     /// 已加入的房间
@@ -85,7 +94,7 @@ public final class WebSocketClient: ObservableObject {
         logger.info("[WebSocket] Disconnected", tag: "ws")
     }
 
-    /// 使用新 Token 重连（保持原有认证方式）
+    /// 使用新 Token 重连（保持原有认证方式和 mTLS 设置）
     public func reconnect(withToken token: String) {
         disconnect()
 
@@ -98,7 +107,11 @@ public final class WebSocketClient: ObservableObject {
             reconnectAttempts: configuration.reconnectAttempts,
             reconnectWait: configuration.reconnectWait,
             extraParams: configuration.extraParams,
-            extraHeaders: configuration.extraHeaders
+            extraHeaders: configuration.extraHeaders,
+            certificateProvider: configuration.certificateProvider,
+            sessionDelegate: configuration.sessionDelegate,
+            secure: configuration.secure,
+            selfSigned: configuration.selfSigned
         )
 
         setupSocket(with: newConfig)
@@ -139,11 +152,15 @@ public final class WebSocketClient: ObservableObject {
 
     // MARK: - Event Handling
 
-    /// 监听事件（类型安全）
+    /// 监听事件（类型安全，返回 Token）
     /// - Parameters:
     ///   - event: 事件名称
     ///   - handler: 事件处理器，接收解码后的数据
-    public func on<T: Decodable>(_ event: String, handler: @escaping (T) -> Void) {
+    /// - Returns: EventHandlerToken 用于后续移除监听
+    @discardableResult
+    public func on<T: Decodable>(_ event: String, handler: @escaping (T) -> Void) -> EventHandlerToken {
+        let token = EventHandlerToken(event: event)
+
         // 存储包装后的处理器
         let wrappedHandler: (Any) -> Void = { [weak self] data in
             guard let self = self else { return }
@@ -152,26 +169,62 @@ public final class WebSocketClient: ObservableObject {
             }
         }
 
-        if eventHandlers[event] == nil {
-            eventHandlers[event] = []
+        let tokenizedHandler = TokenizedHandler(token: token, handler: wrappedHandler)
+
+        if tokenizedHandlers[event] == nil {
+            tokenizedHandlers[event] = []
             // 首次注册该事件时，设置 Socket.IO 监听
             socket?.on(event) { [weak self] data, _ in
                 self?.handleEvent(event, data: data)
             }
         }
 
-        eventHandlers[event]?.append(wrappedHandler)
+        tokenizedHandlers[event]?.append(tokenizedHandler)
+
+        return token
     }
 
-    /// 监听事件（原始数据）
-    public func onRaw(_ event: String, handler: @escaping ([Any]) -> Void) {
-        socket?.on(event) { data, _ in
-            handler(data)
+    /// 监听事件（原始数据，返回 Token）
+    @discardableResult
+    public func onRaw(_ event: String, handler: @escaping ([Any]) -> Void) -> EventHandlerToken {
+        let token = EventHandlerToken(event: event)
+
+        let wrappedHandler: (Any) -> Void = { data in
+            if let arrayData = data as? [Any] {
+                handler(arrayData)
+            } else {
+                handler([data])
+            }
+        }
+
+        let tokenizedHandler = TokenizedHandler(token: token, handler: wrappedHandler)
+
+        if tokenizedHandlers[event] == nil {
+            tokenizedHandlers[event] = []
+            socket?.on(event) { [weak self] data, _ in
+                self?.handleEvent(event, data: data)
+            }
+        }
+
+        tokenizedHandlers[event]?.append(tokenizedHandler)
+
+        return token
+    }
+
+    /// 移除特定的事件监听（按 Token）
+    public func off(token: EventHandlerToken) {
+        tokenizedHandlers[token.event]?.removeAll { $0.token.id == token.id }
+
+        // 如果该事件没有任何监听器了，清理 Socket.IO 监听
+        if tokenizedHandlers[token.event]?.isEmpty == true && eventHandlers[token.event]?.isEmpty != false {
+            tokenizedHandlers[token.event] = nil
+            socket?.off(token.event)
         }
     }
 
-    /// 取消监听事件
+    /// 取消监听事件（移除该事件的所有监听器）
     public func off(_ event: String) {
+        tokenizedHandlers[event] = nil
         eventHandlers[event] = nil
         socket?.off(event)
     }
@@ -218,6 +271,106 @@ public final class WebSocketClient: ObservableObject {
         logger.debug("[WebSocket] Emit: \(event)", tag: "ws")
     }
 
+    // MARK: - Emit With Ack
+
+    /// 发送事件并等待 Ack 响应（async/await 版本）
+    /// - Parameters:
+    ///   - event: 事件名称
+    ///   - data: 要发送的数据（字典）
+    ///   - timeout: 超时时间（秒），默认 10 秒
+    /// - Returns: 服务端返回的响应数据
+    /// - Throws: WebSocketError.notConnected, WebSocketError.timeout
+    public func emitWithAck(_ event: String, data: [String: Any], timeout: TimeInterval = 10) async throws -> [String: Any] {
+        guard isConnected else {
+            throw WebSocketError.notConnected
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            socket?.emitWithAck(event, data).timingOut(after: timeout) { [weak self] responseData in
+                // 检查是否超时（Socket.IO 返回 "NO ACK"）
+                if let status = responseData.first as? String, status == "NO ACK" {
+                    continuation.resume(throwing: WebSocketError.timeout)
+                    return
+                }
+
+                // 解析响应
+                if let response = responseData.first as? [String: Any] {
+                    continuation.resume(returning: response)
+                } else {
+                    // 返回空字典表示无数据响应
+                    continuation.resume(returning: [:])
+                }
+
+                self?.logger.debug("[WebSocket] EmitWithAck response: \(event)", tag: "ws")
+            }
+        }
+    }
+
+    /// 发送事件并等待 Ack 响应（泛型版本）
+    /// - Parameters:
+    ///   - event: 事件名称
+    ///   - data: 要发送的数据（Encodable）
+    ///   - timeout: 超时时间（秒），默认 10 秒
+    /// - Returns: 服务端返回的响应数据（解码为指定类型）
+    /// - Throws: WebSocketError.notConnected, WebSocketError.timeout, WebSocketError.decodingFailed
+    public func emitWithAck<T: Encodable, R: Decodable>(_ event: String, data: T, timeout: TimeInterval = 10) async throws -> R {
+        guard isConnected else {
+            throw WebSocketError.notConnected
+        }
+
+        // 编码请求数据
+        let jsonData = try JSONEncoder().encode(data)
+        guard let dict = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            throw WebSocketError.encodingFailed
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            socket?.emitWithAck(event, dict).timingOut(after: timeout) { [weak self] responseData in
+                guard let self = self else {
+                    continuation.resume(throwing: WebSocketError.notConnected)
+                    return
+                }
+
+                // 检查是否超时
+                if let status = responseData.first as? String, status == "NO ACK" {
+                    continuation.resume(throwing: WebSocketError.timeout)
+                    return
+                }
+
+                // 解析并解码响应
+                if let response = responseData.first {
+                    if let decoded: R = self.decode(R.self, from: response) {
+                        continuation.resume(returning: decoded)
+                    } else {
+                        continuation.resume(throwing: WebSocketError.decodingFailed)
+                    }
+                } else {
+                    continuation.resume(throwing: WebSocketError.decodingFailed)
+                }
+
+                self.logger.debug("[WebSocket] EmitWithAck response: \(event)", tag: "ws")
+            }
+        }
+    }
+
+    /// 发送事件并等待 Ack 响应（回调版本，兼容旧代码）
+    /// - Parameters:
+    ///   - event: 事件名称
+    ///   - data: 要发送的数据
+    ///   - timeout: 超时时间（秒）
+    ///   - completion: 完成回调
+    public func emitWithAck(_ event: String, data: [String: Any], timeout: TimeInterval = 10, completion: @escaping ([Any]) -> Void) {
+        guard isConnected else {
+            logger.warning("[WebSocket] Cannot emitWithAck: not connected", tag: "ws")
+            completion(["NO ACK"])
+            return
+        }
+
+        socket?.emitWithAck(event, data).timingOut(after: timeout) { responseData in
+            completion(responseData)
+        }
+    }
+
     // MARK: - Private Methods
 
     private func setupSocket(with config: WebSocketConfiguration? = nil) {
@@ -259,6 +412,19 @@ public final class WebSocketClient: ObservableObject {
         // 添加 Headers
         if !headers.isEmpty {
             socketConfig.insert(.extraHeaders(headers))
+        }
+
+        // mTLS 配置
+        if let sessionDelegate = cfg.sessionDelegate {
+            socketConfig.insert(.sessionDelegate(sessionDelegate))
+        }
+
+        if cfg.secure {
+            socketConfig.insert(.secure(true))
+        }
+
+        if cfg.selfSigned {
+            socketConfig.insert(.selfSigned(true))
         }
 
         manager = SocketManager(socketURL: cfg.url, config: socketConfig)
@@ -315,20 +481,38 @@ public final class WebSocketClient: ObservableObject {
     }
 
     private func reregisterEventHandlers() {
-        // 重新注册所有事件监听器
-        for event in eventHandlers.keys {
+        // 重新注册所有 tokenized 事件监听器
+        for event in tokenizedHandlers.keys {
             socket?.on(event) { [weak self] data, _ in
                 self?.handleEvent(event, data: data)
+            }
+        }
+
+        // 重新注册旧 API 事件监听器
+        for event in eventHandlers.keys {
+            if tokenizedHandlers[event] == nil {
+                socket?.on(event) { [weak self] data, _ in
+                    self?.handleEvent(event, data: data)
+                }
             }
         }
     }
 
     private func handleEvent(_ event: String, data: [Any]) {
-        guard let handlers = eventHandlers[event], !handlers.isEmpty else { return }
         guard let payload = data.first else { return }
 
-        for handler in handlers {
-            handler(payload)
+        // 调用 tokenized handlers
+        if let handlers = tokenizedHandlers[event] {
+            for handler in handlers {
+                handler.handler(payload)
+            }
+        }
+
+        // 调用旧 API handlers（兼容）
+        if let handlers = eventHandlers[event] {
+            for handler in handlers {
+                handler(payload)
+            }
         }
     }
 
@@ -367,6 +551,8 @@ public enum WebSocketError: Error, LocalizedError {
     case notConnected
     case encodingFailed
     case decodingFailed
+    case timeout
+    case authenticationFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -378,6 +564,23 @@ public enum WebSocketError: Error, LocalizedError {
             return "Failed to encode data"
         case .decodingFailed:
             return "Failed to decode data"
+        case .timeout:
+            return "Request timed out"
+        case .authenticationFailed(let message):
+            return "Authentication failed: \(message)"
         }
+    }
+}
+
+// MARK: - Event Handler Token
+
+/// 事件监听 Token，用于移除特定的监听器
+public struct EventHandlerToken: Hashable {
+    public let id: UUID
+    public let event: String
+
+    public init(event: String) {
+        self.id = UUID()
+        self.event = event
     }
 }

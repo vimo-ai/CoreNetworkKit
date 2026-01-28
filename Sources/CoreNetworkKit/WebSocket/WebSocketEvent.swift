@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// WebSocket 连接状态
 public enum WebSocketConnectionState {
@@ -49,6 +50,18 @@ public struct WebSocketConfiguration {
     /// 额外的 HTTP Headers
     public let extraHeaders: [String: String]?
 
+    /// mTLS 证书提供者（可选）
+    public let certificateProvider: CertificateProvider?
+
+    /// 自定义 URLSession Delegate（用于 mTLS）
+    public let sessionDelegate: URLSessionDelegate?
+
+    /// 是否启用安全连接（HTTPS）
+    public let secure: Bool
+
+    /// 是否允许自签名证书
+    public let selfSigned: Bool
+
     public init(
         url: URL,
         token: String? = nil,
@@ -58,7 +71,11 @@ public struct WebSocketConfiguration {
         reconnectAttempts: Int = 5,
         reconnectWait: TimeInterval = 2,
         extraParams: [String: Any]? = nil,
-        extraHeaders: [String: String]? = nil
+        extraHeaders: [String: String]? = nil,
+        certificateProvider: CertificateProvider? = nil,
+        sessionDelegate: URLSessionDelegate? = nil,
+        secure: Bool = false,
+        selfSigned: Bool = false
     ) {
         self.url = url
         self.token = token
@@ -69,6 +86,10 @@ public struct WebSocketConfiguration {
         self.reconnectWait = reconnectWait
         self.extraParams = extraParams
         self.extraHeaders = extraHeaders
+        self.certificateProvider = certificateProvider
+        self.sessionDelegate = sessionDelegate
+        self.secure = secure
+        self.selfSigned = selfSigned
     }
 
     /// 使用 Token (query 参数方式) 创建配置
@@ -79,6 +100,24 @@ public struct WebSocketConfiguration {
     /// 使用 JWT Bearer Token 创建配置
     public static func withBearerToken(_ token: String, url: URL) -> WebSocketConfiguration {
         WebSocketConfiguration(url: url, token: token, authMethod: .bearerHeader)
+    }
+
+    /// 使用 mTLS 创建配置
+    public static func withMTLS(
+        url: URL,
+        token: String? = nil,
+        certificateProvider: CertificateProvider,
+        sessionDelegate: URLSessionDelegate
+    ) -> WebSocketConfiguration {
+        WebSocketConfiguration(
+            url: url,
+            token: token,
+            authMethod: .queryParam(),
+            certificateProvider: certificateProvider,
+            sessionDelegate: sessionDelegate,
+            secure: true,
+            selfSigned: true
+        )
     }
 }
 
