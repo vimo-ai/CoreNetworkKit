@@ -286,7 +286,12 @@ public final class WebSocketClient: ObservableObject {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            socket?.emitWithAck(event, data).timingOut(after: timeout) { [weak self] responseData in
+            guard let socket = socket else {
+                continuation.resume(throwing: WebSocketError.notConnected)
+                return
+            }
+
+            socket.emitWithAck(event, data).timingOut(after: timeout) { [weak self] responseData in
                 // 检查是否超时（Socket.IO 返回 "NO ACK"）
                 if let status = responseData.first as? String, status == "NO ACK" {
                     continuation.resume(throwing: WebSocketError.timeout)
@@ -325,7 +330,12 @@ public final class WebSocketClient: ObservableObject {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            socket?.emitWithAck(event, dict).timingOut(after: timeout) { [weak self] responseData in
+            guard let socket = socket else {
+                continuation.resume(throwing: WebSocketError.notConnected)
+                return
+            }
+
+            socket.emitWithAck(event, dict).timingOut(after: timeout) { [weak self] responseData in
                 guard let self = self else {
                     continuation.resume(throwing: WebSocketError.notConnected)
                     return
