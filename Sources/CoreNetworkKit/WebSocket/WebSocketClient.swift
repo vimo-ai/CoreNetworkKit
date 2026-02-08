@@ -286,27 +286,30 @@ public final class WebSocketClient: ObservableObject {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            guard let socket = socket else {
+            guard let socket = socket, let manager = manager else {
                 continuation.resume(throwing: WebSocketError.notConnected)
                 return
             }
 
-            socket.emitWithAck(event, data).timingOut(after: timeout) { [weak self] responseData in
-                // 检查是否超时（Socket.IO 返回 "NO ACK"）
-                if let status = responseData.first as? String, status == "NO ACK" {
-                    continuation.resume(throwing: WebSocketError.timeout)
-                    return
-                }
+                // SocketIOClient is not thread-safe, all interactions must happen on handleQueue
+            manager.handleQueue.async {
+                socket.emitWithAck(event, data).timingOut(after: timeout) { [weak self] responseData in
+                    // 检查是否超时（Socket.IO 返回 "NO ACK"）
+                    if let status = responseData.first as? String, status == "NO ACK" {
+                        continuation.resume(throwing: WebSocketError.timeout)
+                        return
+                    }
 
-                // 解析响应
-                if let response = responseData.first as? [String: Any] {
-                    continuation.resume(returning: response)
-                } else {
-                    // 返回空字典表示无数据响应
-                    continuation.resume(returning: [:])
-                }
+                    // 解析响应
+                    if let response = responseData.first as? [String: Any] {
+                        continuation.resume(returning: response)
+                    } else {
+                        // 返回空字典表示无数据响应
+                        continuation.resume(returning: [:])
+                    }
 
-                self?.logger.debug("[WebSocket] EmitWithAck response: \(event)", tag: "ws")
+                    self?.logger.debug("[WebSocket] EmitWithAck response: \(event)", tag: "ws")
+                }
             }
         }
     }
@@ -330,35 +333,38 @@ public final class WebSocketClient: ObservableObject {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            guard let socket = socket else {
+            guard let socket = socket, let manager = manager else {
                 continuation.resume(throwing: WebSocketError.notConnected)
                 return
             }
 
-            socket.emitWithAck(event, dict).timingOut(after: timeout) { [weak self] responseData in
-                guard let self = self else {
-                    continuation.resume(throwing: WebSocketError.notConnected)
-                    return
-                }
+            // SocketIOClient is not thread-safe, all interactions must happen on handleQueue
+            manager.handleQueue.async {
+                socket.emitWithAck(event, dict).timingOut(after: timeout) { [weak self] responseData in
+                    guard let self = self else {
+                        continuation.resume(throwing: WebSocketError.notConnected)
+                        return
+                    }
 
-                // 检查是否超时
-                if let status = responseData.first as? String, status == "NO ACK" {
-                    continuation.resume(throwing: WebSocketError.timeout)
-                    return
-                }
+                    // 检查是否超时
+                    if let status = responseData.first as? String, status == "NO ACK" {
+                        continuation.resume(throwing: WebSocketError.timeout)
+                        return
+                    }
 
-                // 解析并解码响应
-                if let response = responseData.first {
-                    if let decoded: R = self.decode(R.self, from: response) {
-                        continuation.resume(returning: decoded)
+                    // 解析并解码响应
+                    if let response = responseData.first {
+                        if let decoded: R = self.decode(R.self, from: response) {
+                            continuation.resume(returning: decoded)
+                        } else {
+                            continuation.resume(throwing: WebSocketError.decodingFailed)
+                        }
                     } else {
                         continuation.resume(throwing: WebSocketError.decodingFailed)
                     }
-                } else {
-                    continuation.resume(throwing: WebSocketError.decodingFailed)
-                }
 
-                self.logger.debug("[WebSocket] EmitWithAck response: \(event)", tag: "ws")
+                    self.logger.debug("[WebSocket] EmitWithAck response: \(event)", tag: "ws")
+                }
             }
         }
     }
@@ -376,8 +382,17 @@ public final class WebSocketClient: ObservableObject {
             return
         }
 
-        socket?.emitWithAck(event, data).timingOut(after: timeout) { responseData in
-            completion(responseData)
+        guard let socket = socket, let manager = manager else {
+            logger.warning("[WebSocket] Cannot emitWithAck: socket/manager nil", tag: "ws")
+            completion(["NO ACK"])
+            return
+        }
+
+        // SocketIOClient is not thread-safe, all interactions must happen on handleQueue
+        manager.handleQueue.async {
+            socket.emitWithAck(event, data).timingOut(after: timeout) { responseData in
+                completion(responseData)
+            }
         }
     }
 
