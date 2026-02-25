@@ -111,7 +111,8 @@ public final class WebSocketClient: ObservableObject {
             certificateProvider: configuration.certificateProvider,
             sessionDelegate: configuration.sessionDelegate,
             secure: configuration.secure,
-            selfSigned: configuration.selfSigned
+            selfSigned: configuration.selfSigned,
+            socketIOPath: configuration.socketIOPath
         )
 
         setupSocket(with: newConfig)
@@ -437,6 +438,11 @@ public final class WebSocketClient: ObservableObject {
         // 添加 Headers
         if !headers.isEmpty {
             socketConfig.insert(.extraHeaders(headers))
+        }
+
+        // 自定义 Socket.IO 连接路径（服务器侧使用非默认 /socket.io 路径时需要）
+        if let path = cfg.socketIOPath {
+            socketConfig.insert(.path(path))
         }
 
         // mTLS 配置

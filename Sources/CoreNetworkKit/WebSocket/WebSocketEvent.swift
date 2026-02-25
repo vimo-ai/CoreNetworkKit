@@ -24,6 +24,8 @@ public enum WebSocketAuthMethod {
 /// WebSocket 配置
 public struct WebSocketConfiguration {
     /// 服务器 URL
+    /// - Socket.IO 客户端：传服务器根地址，如 `http://localhost:3002`
+    /// - path 通过 `socketIOPath` 字段指定
     public let url: URL
 
     /// 认证 Token
@@ -62,6 +64,10 @@ public struct WebSocketConfiguration {
     /// 是否允许自签名证书
     public let selfSigned: Bool
 
+    /// Socket.IO 连接路径（默认为 `/socket.io`）
+    /// 如果服务器配置了自定义 path（如 `/mock/socketio`），需在此指定
+    public let socketIOPath: String?
+
     public init(
         url: URL,
         token: String? = nil,
@@ -75,7 +81,8 @@ public struct WebSocketConfiguration {
         certificateProvider: CertificateProvider? = nil,
         sessionDelegate: URLSessionDelegate? = nil,
         secure: Bool = false,
-        selfSigned: Bool = false
+        selfSigned: Bool = false,
+        socketIOPath: String? = nil
     ) {
         self.url = url
         self.token = token
@@ -90,6 +97,7 @@ public struct WebSocketConfiguration {
         self.sessionDelegate = sessionDelegate
         self.secure = secure
         self.selfSigned = selfSigned
+        self.socketIOPath = socketIOPath
     }
 
     /// 使用 Token (query 参数方式) 创建配置
