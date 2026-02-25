@@ -55,9 +55,14 @@ public class AppFeedbackHandler: UserFeedbackHandler, ObservableObject {
     }
     
     // MARK: - Initialization
-    
+
     public init() {}
-    
+
+    // MARK: - Authentication Handler
+
+    /// Callback for handling authentication failure, set by the app layer
+    public var onAuthenticationFailed: (() -> Void)?
+
     // MARK: - UserFeedbackHandler Implementation
     
     public func showSuccess(message: String) {
@@ -88,7 +93,9 @@ public class AppFeedbackHandler: UserFeedbackHandler, ObservableObject {
 
     public func handleAuthenticationFailure() {
         log(level: .warning, message: "Authentication failed - user should be logged out")
-        // 子类或外部可以通过回调处理具体的登出逻辑
+        DispatchQueue.main.async {
+            self.onAuthenticationFailed?()
+        }
     }
 
     // MARK: - Private Helpers
