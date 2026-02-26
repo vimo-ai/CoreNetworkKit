@@ -54,9 +54,16 @@ public class AppFeedbackHandler: UserFeedbackHandler, ObservableObject {
         }
     }
     
+    // MARK: - Configuration
+
+    /// App name used as log tag, set via init
+    private let appName: String
+
     // MARK: - Initialization
 
-    public init() {}
+    public init(appName: String = "App") {
+        self.appName = appName
+    }
 
     // MARK: - Authentication Handler
 
@@ -88,7 +95,7 @@ public class AppFeedbackHandler: UserFeedbackHandler, ObservableObject {
     
     public func log(level: LogLevel, message: String) {
         let prefix = logPrefix(for: level)
-        print("\(prefix) [BeaconFlow] \(message)")
+        print("\(prefix) [\(appName)] \(message)")
     }
 
     public func handleAuthenticationFailure() {
