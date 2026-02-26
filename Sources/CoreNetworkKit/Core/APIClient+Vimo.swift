@@ -98,21 +98,21 @@ extension APIClient {
             throw error
         } catch let apiError as APIError {
             // 尝试 token refresh（仅限401错误且允许重试）
-            print("[APIClient+BeaconFlow] 捕获到 APIError: \(apiError)")
-            print("[APIClient+BeaconFlow] allowRetryAfterRefresh = \(allowRetryAfterRefresh)")
-            print("[APIClient+BeaconFlow] shouldAttemptRefresh = \(shouldAttemptRefresh(for: apiError))")
-            print("[APIClient+BeaconFlow] tokenRefresher is nil? \(tokenRefresher == nil)")
-            
+            logger.debug("[APIClient] 捕获到 APIError: \(apiError)", tag: "token-refresh")
+            logger.debug("[APIClient] allowRetryAfterRefresh = \(allowRetryAfterRefresh)", tag: "token-refresh")
+            logger.debug("[APIClient] shouldAttemptRefresh = \(shouldAttemptRefresh(for: apiError))", tag: "token-refresh")
+            logger.debug("[APIClient] tokenRefresher is nil? \(tokenRefresher == nil)", tag: "token-refresh")
+
             if allowRetryAfterRefresh,
                shouldAttemptRefresh(for: apiError),
                let tokenRefresher = tokenRefresher {
                 do {
-                    print("[APIClient+BeaconFlow] 401 detected, attempting token refresh...")
+                    logger.warning("[APIClient] 401 detected, attempting token refresh...", tag: "token-refresh")
                     try await refreshCoordinator.refresh(using: tokenRefresher)
-                    print("[APIClient+BeaconFlow] refresh succeeded, retrying request once")
+                    logger.debug("[APIClient] refresh succeeded, retrying request once", tag: "token-refresh")
                     return try await send(request, allowRetryAfterRefresh: false)
                 } catch {
-                    print("[APIClient+BeaconFlow] refresh failed: \(error)")
+                    logger.error("[APIClient] refresh failed: \(error.localizedDescription)", tag: "token-refresh")
                     // Token 刷新失败，通知 App 用户需要重新登录
                     userFeedbackHandler?.handleAuthenticationFailure()
                     throw apiError

@@ -1,5 +1,6 @@
 import Foundation
 import Alamofire
+import MLoggerKit
 
 /// mTLS Session Delegate
 ///
@@ -11,6 +12,7 @@ import Alamofire
 public final class MTLSSessionDelegate: SessionDelegate, @unchecked Sendable {
 
     private let mTLSConfig: MTLSConfiguration
+    private let logger = MLogger(category: .network)
 
     /// 创建 mTLS Session Delegate
     ///
@@ -62,7 +64,7 @@ public final class MTLSSessionDelegate: SessionDelegate, @unchecked Sendable {
         let host = challenge.protectionSpace.host
 
         guard let serverTrust = challenge.protectionSpace.serverTrust else {
-            print("❌ [mTLS] 无法获取服务端信任对象: \(host)")
+            logger.error("无法获取服务端信任对象: \(host)", tag: "mtls")
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
@@ -78,19 +80,19 @@ public final class MTLSSessionDelegate: SessionDelegate, @unchecked Sendable {
                 let credential = URLCredential(trust: serverTrust)
                 completionHandler(.useCredential, credential)
             } else {
-                print("❌ [mTLS] 服务端证书验证失败: \(host)")
+                logger.error("服务端证书验证失败: \(host)", tag: "mtls")
                 completionHandler(.cancelAuthenticationChallenge, nil)
             }
 
         case .disabled:
             // 禁用验证（仅开发环境）
             #if DEBUG
-            print("⚠️ [mTLS] 服务端证书验证已禁用（开发模式）: \(host)")
+            logger.warning("服务端证书验证已禁用（开发模式）: \(host)", tag: "mtls")
             let credential = URLCredential(trust: serverTrust)
             completionHandler(.useCredential, credential)
             #else
             // 生产环境不允许禁用
-            print("❌ [mTLS] 生产环境不允许禁用证书验证")
+            logger.error("生产环境不允许禁用证书验证", tag: "mtls")
             completionHandler(.cancelAuthenticationChallenge, nil)
             #endif
         }
@@ -107,10 +109,10 @@ public final class MTLSSessionDelegate: SessionDelegate, @unchecked Sendable {
         // 检查证书是否可用
         guard mTLSConfig.certificateProvider.isAvailable else {
             if mTLSConfig.allowFallback {
-                print("⚠️ [mTLS] 客户端证书不可用，回退到普通模式: \(host)")
+                logger.warning("客户端证书不可用，回退到普通模式: \(host)", tag: "mtls")
                 completionHandler(.performDefaultHandling, nil)
             } else {
-                print("❌ [mTLS] 客户端证书不可用且不允许回退: \(host)")
+                logger.error("客户端证书不可用且不允许回退: \(host)", tag: "mtls")
                 completionHandler(.cancelAuthenticationChallenge, nil)
             }
             return
@@ -121,7 +123,7 @@ public final class MTLSSessionDelegate: SessionDelegate, @unchecked Sendable {
             let credential = try mTLSConfig.certificateProvider.clientCredential()
             completionHandler(.useCredential, credential)
         } catch {
-            print("❌ [mTLS] 获取客户端证书失败: \(error.localizedDescription)")
+            logger.error("获取客户端证书失败: \(error.localizedDescription)", tag: "mtls")
 
             if mTLSConfig.allowFallback {
                 completionHandler(.performDefaultHandling, nil)

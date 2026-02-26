@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import MLoggerKit
 
 /// 从 Bundle 加载证书的提供者
 ///
@@ -30,6 +31,7 @@ public final class BundleCertificateProvider: CertificateProvider, @unchecked Se
     private let identity: SecIdentity
     private let certificate: SecCertificate
     private let anchors: [SecCertificate]
+    private let logger = MLogger(category: .network)
 
     // MARK: - Initialization
 
@@ -113,7 +115,7 @@ public final class BundleCertificateProvider: CertificateProvider, @unchecked Se
         let isValid = SecTrustEvaluateWithError(trust, &error)
 
         if !isValid, let error = error {
-            print("⚠️ [BundleCertificateProvider] 服务端证书验证失败 [\(host)]: \(error.localizedDescription)")
+            logger.warning("服务端证书验证失败 [\(host)]: \(error.localizedDescription)", tag: "mtls")
         }
 
         return isValid

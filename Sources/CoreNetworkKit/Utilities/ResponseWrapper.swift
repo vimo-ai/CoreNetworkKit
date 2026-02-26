@@ -1,4 +1,5 @@
 import Foundation
+import MLoggerKit
 
 // MARK: - Wrapped Response Models
 
@@ -85,6 +86,8 @@ public enum LogLevel {
 
 /// 默认的用户反馈处理器（仅日志，不显示Toast）
 public class DefaultUserFeedbackHandler: UserFeedbackHandler {
+    private let logger = MLogger(category: .network)
+
     public init() {}
 
     public func showSuccess(message: String) {
@@ -100,7 +103,16 @@ public class DefaultUserFeedbackHandler: UserFeedbackHandler {
     }
 
     public func log(level: LogLevel, message: String) {
-        print("[\(level)] \(message)")
+        switch level {
+        case .debug:
+            logger.debug(message, tag: "feedback")
+        case .info:
+            logger.info(message, tag: "feedback")
+        case .warning:
+            logger.warning(message, tag: "feedback")
+        case .error:
+            logger.error(message, tag: "feedback")
+        }
     }
 
     public func handleAuthenticationFailure() {
