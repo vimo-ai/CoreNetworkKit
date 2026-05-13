@@ -23,9 +23,7 @@ public enum WebSocketAuthMethod {
 
 /// WebSocket 配置
 public struct WebSocketConfiguration {
-    /// 服务器 URL
-    /// - Socket.IO 客户端：传服务器根地址，如 `http://localhost:3002`
-    /// - path 通过 `socketIOPath` 字段指定
+    /// 服务器 URL（如 `ws://localhost:9506`）
     public let url: URL
 
     /// 认证 Token
@@ -46,7 +44,7 @@ public struct WebSocketConfiguration {
     /// 重连等待时间（秒）
     public let reconnectWait: TimeInterval
 
-    /// 额外的连接参数
+    /// 额外的 URL query 参数
     public let extraParams: [String: Any]?
 
     /// 额外的 HTTP Headers
@@ -58,15 +56,14 @@ public struct WebSocketConfiguration {
     /// 自定义 URLSession Delegate（用于 mTLS）
     public let sessionDelegate: URLSessionDelegate?
 
-    /// 是否启用安全连接（HTTPS）
+    /// 是否启用安全连接（wss://）
     public let secure: Bool
 
     /// 是否允许自签名证书
     public let selfSigned: Bool
 
-    /// Socket.IO 连接路径（默认为 `/socket.io`）
-    /// 如果服务器配置了自定义 path（如 `/mock/socketio`），需在此指定
-    public let socketIOPath: String?
+    /// WebSocket 连接路径（追加到 url 后，如 `/chat`）
+    public let path: String?
 
     public init(
         url: URL,
@@ -82,7 +79,7 @@ public struct WebSocketConfiguration {
         sessionDelegate: URLSessionDelegate? = nil,
         secure: Bool = false,
         selfSigned: Bool = false,
-        socketIOPath: String? = nil
+        path: String? = nil
     ) {
         self.url = url
         self.token = token
@@ -97,17 +94,17 @@ public struct WebSocketConfiguration {
         self.sessionDelegate = sessionDelegate
         self.secure = secure
         self.selfSigned = selfSigned
-        self.socketIOPath = socketIOPath
+        self.path = path
     }
 
     /// 使用 Token (query 参数方式) 创建配置
-    public static func withToken(_ token: String, url: URL) -> WebSocketConfiguration {
-        WebSocketConfiguration(url: url, token: token, authMethod: .queryParam())
+    public static func withToken(_ token: String, url: URL, path: String? = nil) -> WebSocketConfiguration {
+        WebSocketConfiguration(url: url, token: token, authMethod: .queryParam(), path: path)
     }
 
     /// 使用 JWT Bearer Token 创建配置
-    public static func withBearerToken(_ token: String, url: URL) -> WebSocketConfiguration {
-        WebSocketConfiguration(url: url, token: token, authMethod: .bearerHeader)
+    public static func withBearerToken(_ token: String, url: URL, path: String? = nil) -> WebSocketConfiguration {
+        WebSocketConfiguration(url: url, token: token, authMethod: .bearerHeader, path: path)
     }
 
     /// 使用 mTLS 创建配置
@@ -129,13 +126,13 @@ public struct WebSocketConfiguration {
     }
 }
 
-/// 通用 WebSocket 消息包装
+/// 通用 WebSocket 消息信封
 public struct WebSocketMessage<T: Decodable>: Decodable {
-    public let data: T?
     public let event: String?
+    public let data: T?
 
-    public init(data: T?, event: String? = nil) {
-        self.data = data
+    public init(event: String? = nil, data: T? = nil) {
         self.event = event
+        self.data = data
     }
 }
