@@ -26,6 +26,11 @@ public struct NetworkClientConfig: Sendable {
     /// JSON encoder used for request body serialization.
     public var jsonEncoder: JSONEncoder
 
+    /// Response decoder that handles raw Data → T conversion.
+    /// Use `DirectDecoder()` (default) for raw JSON, or
+    /// `EnvelopeDecoder()` for `{success, data, message, timestamp}` unwrap.
+    public var responseDecoder: ResponseDecoder
+
     public init(
         baseURL: String,
         timeout: TimeInterval? = nil,
@@ -33,7 +38,8 @@ public struct NetworkClientConfig: Sendable {
         retry: RetryPolicy = .none,
         control: ControlPolicy = ControlPolicy(),
         jsonDecoder: JSONDecoder = JSONDecoder(),
-        jsonEncoder: JSONEncoder = JSONEncoder()
+        jsonEncoder: JSONEncoder = JSONEncoder(),
+        responseDecoder: ResponseDecoder = DirectDecoder()
     ) {
         self.baseURL = baseURL
         self.timeout = timeout
@@ -42,6 +48,7 @@ public struct NetworkClientConfig: Sendable {
         self.control = control
         self.jsonDecoder = jsonDecoder
         self.jsonEncoder = jsonEncoder
+        self.responseDecoder = responseDecoder
     }
 }
 
@@ -216,7 +223,9 @@ public final class NetworkClientV2: @unchecked Sendable {
 
             let decoded: T
             do {
-                decoded = try config.jsonDecoder.decode(T.self, from: data)
+                decoded = try config.responseDecoder.decode(T.self, from: data, using: config.jsonDecoder)
+            } catch let error as BusinessErrorV2 {
+                throw error
             } catch {
                 throw RequestError(
                     code: .parse,
