@@ -3,21 +3,25 @@ import Foundation
 // MARK: - Wrapped Response Shape
 
 /// The standard envelope returned by the Vimo backend.
+/// Format: `{ success, data, message, timestamp }`
 private struct WrappedEnvelope<T: Decodable>: Decodable {
     let success: Bool
     let data: T?
     let message: String?
+    let timestamp: String?
 }
 
 // MARK: - BusinessError (v2)
 
 /// Thrown when the server returns `{ success: false }` inside a 2xx response.
-/// Aligned with kine-server `BusinessError`.
+/// Aligned with `VimoBusinessError` — carries both message and timestamp.
 public struct BusinessErrorV2: Error, LocalizedError, Sendable {
     public let message: String
+    public let timestamp: String
 
-    public init(message: String) {
+    public init(message: String, timestamp: String = "") {
         self.message = message
+        self.timestamp = timestamp
     }
 
     public var errorDescription: String? { message }
@@ -71,7 +75,14 @@ private struct UnwrapInterceptorImpl: RequestInterceptor, Sendable {
             } else {
                 message = "Request failed"
             }
-            throw BusinessErrorV2(message: message)
+            let timestamp: String
+            if let tsChild = mirror.children.first(where: { $0.label == "timestamp" }),
+               let ts = tsChild.value as? String {
+                timestamp = ts
+            } else {
+                timestamp = ""
+            }
+            throw BusinessErrorV2(message: message, timestamp: timestamp)
         }
 
         // If the inner data is the same type as T, replace it.

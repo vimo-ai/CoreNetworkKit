@@ -126,8 +126,8 @@ public final class ConnectClientFactory {
             host: config.host,
             networkProtocol: config.networkProtocol,
             codec: config.codec,
-            interceptors: config.interceptors,
-            timeout: config.timeout
+            timeout: config.timeout,
+            interceptors: config.interceptors
         )
 
         self.protocolClient = ProtocolClient(

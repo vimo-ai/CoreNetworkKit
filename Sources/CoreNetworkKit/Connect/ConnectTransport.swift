@@ -248,21 +248,25 @@ public final class ConnectTransport: HTTPClientInterface, @unchecked Sendable {
             return connectError
         }
 
-        if let networkError = error as? NetworkError {
-            switch networkError {
-            case .cancelled:
-                return ConnectError(code: .canceled, message: "Request cancelled")
+        if let requestError = error as? RequestError {
+            switch requestError.code {
+            case .abort:
+                return ConnectError(code: .canceled, message: requestError.message)
             case .timeout:
-                return ConnectError(code: .deadlineExceeded, message: "Request timed out")
-            case .noNetwork:
-                return ConnectError(code: .unavailable, message: "No network connection")
-            case .authenticationFailed:
-                return ConnectError(code: .unauthenticated, message: "Authentication failed")
-            case .serverError(let statusCode, let message):
-                let code = mapHTTPStatusToCode(statusCode)
-                return ConnectError(code: code, message: message ?? "Server error (\(statusCode))")
-            default:
-                return ConnectError(code: .unknown, message: error.localizedDescription)
+                return ConnectError(code: .deadlineExceeded, message: requestError.message)
+            case .network:
+                return ConnectError(code: .unavailable, message: requestError.message)
+            case .auth:
+                return ConnectError(code: .unauthenticated, message: requestError.message)
+            case .http:
+                let code = mapHTTPStatusToCode(requestError.status ?? 0)
+                return ConnectError(code: code, message: requestError.message)
+            case .parse:
+                return ConnectError(code: .internalError, message: requestError.message)
+            case .circuitOpen:
+                return ConnectError(code: .unavailable, message: requestError.message)
+            case .unknown:
+                return ConnectError(code: .unknown, message: requestError.message)
             }
         }
 
