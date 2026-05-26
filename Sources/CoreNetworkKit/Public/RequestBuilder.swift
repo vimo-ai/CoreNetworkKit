@@ -133,7 +133,7 @@ public final class RequestBuilder<R: Request> {
         components.host = request.baseURL.host
         components.port = request.baseURL.port
 
-        // 组合路径（使用与 APIClient 相同的方式）
+        // Build the full URL path
         let fullURL = request.baseURL.appendingPathComponent(request.path)
         components.path = fullURL.path
 

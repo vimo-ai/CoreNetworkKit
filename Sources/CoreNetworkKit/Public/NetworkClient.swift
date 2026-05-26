@@ -59,7 +59,13 @@ public final class NetworkClient {
     private let executor: TaskExecutor
     private let orchestrator: Orchestrator
     private let tokenStorage: TokenStorage
+    private let tokenRefresherRef: TokenRefresher?
     private let authContext: AuthenticationContext
+
+    // Internal accessors for cross-module bridging (e.g. ConnectTransport)
+    internal var _engine: NetworkEngine { engine }
+    internal var _tokenStorage: TokenStorage { tokenStorage }
+    internal var _tokenRefresher: TokenRefresher? { tokenRefresherRef }
 
     /// 自定义 JSON 解码器
     public let jsonDecoder: JSONDecoder
@@ -85,6 +91,7 @@ public final class NetworkClient {
     ) {
         self.engine = engine
         self.tokenStorage = tokenStorage
+        self.tokenRefresherRef = tokenRefresher
         self.authContext = AuthenticationContext(tokenStorage: tokenStorage)
         self.executor = TaskExecutor(
             engine: engine,

@@ -1,34 +1,34 @@
 import Foundation
 
-/// 请求控制策略
+/// Request control policy aligned with kine-server `ControlPolicy`.
 ///
-/// 提供防抖、节流、去重和优先级控制能力：
-/// - debounce: 等待指定时间无新请求后才执行
-/// - throttle: 限制执行频率
-/// - deduplicate: 相同请求复用正在进行的任务
-/// - priority: 请求优先级
-public struct ControlPolicy {
-    /// 防抖：等待指定时间无新请求后才执行
-    /// 适用场景：搜索框输入
+/// Provides debounce, throttle, and deduplicate capabilities:
+/// - debounce: wait until no new requests arrive within the interval
+/// - throttle: limit execution frequency
+/// - deduplicate: reuse in-flight requests with the same key
+///
+/// Priority has been moved to `PerRequestConfig` (v2 architecture).
+/// The `Priority` enum is kept here for backward compatibility and
+/// is still used by `PerRequestConfig`.
+public struct ControlPolicy: Sendable {
+    /// Debounce interval (seconds). Nil means no debounce.
     public var debounce: TimeInterval?
 
-    /// 节流：限制执行频率
-    /// 适用场景：滚动加载
+    /// Throttle interval (seconds). Nil means no throttle.
     public var throttle: TimeInterval?
 
-    /// 去重：相同请求复用正在进行的任务
-    /// 适用场景：避免重复请求
+    /// Whether to deduplicate identical in-flight requests.
     public var deduplicate: Bool
 
-    /// 请求优先级
-    public var priority: Priority
+    /// Legacy priority field. Prefer `PerRequestConfig.priority` in v2.
+    @available(*, deprecated, message: "Use PerRequestConfig.priority instead")
+    public var priority: Priority {
+        get { _priority }
+        set { _priority = newValue }
+    }
 
-    /// 创建控制策略
-    /// - Parameters:
-    ///   - debounce: 防抖时间间隔
-    ///   - throttle: 节流时间间隔
-    ///   - deduplicate: 是否去重
-    ///   - priority: 请求优先级
+    private var _priority: Priority
+
     public init(
         debounce: TimeInterval? = nil,
         throttle: TimeInterval? = nil,
@@ -38,11 +38,11 @@ public struct ControlPolicy {
         self.debounce = debounce
         self.throttle = throttle
         self.deduplicate = deduplicate
-        self.priority = priority
+        self._priority = priority
     }
 
-    /// 请求优先级
-    public enum Priority: Int, Comparable {
+    /// Request priority levels.
+    public enum Priority: Int, Comparable, Sendable {
         case low = 0
         case normal = 1
         case high = 2

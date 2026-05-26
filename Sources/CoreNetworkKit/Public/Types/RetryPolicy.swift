@@ -135,3 +135,58 @@ public enum RetryPolicy: Sendable {
         }
     }
 }
+
+// MARK: - Standalone withRetry Function
+
+/// Execute `fn` with retry semantics aligned with kine-server `withRetry()`.
+///
+/// `maxAttempts` semantics: total number of attempts including the first.
+/// For example, `.fixed(maxAttempts: 3, delay: 1)` will try at most 3 times.
+///
+/// - Parameters:
+///   - fn: The async operation to execute.
+///   - policy: The retry policy governing delay and max attempts.
+///   - shouldRetry: Optional predicate; defaults to retrying on network, timeout, and 5xx errors.
+/// - Returns: The result of `fn` on success.
+/// - Throws: The last error if all attempts are exhausted, or a non-retryable error immediately.
+public func withRetry<T: Sendable>(
+    _ fn: @Sendable () async throws -> T,
+    policy: RetryPolicy,
+    shouldRetry: (@Sendable (RequestError) -> Bool)? = nil
+) async throws -> T {
+    guard policy.allowsRetry else {
+        return try await fn()
+    }
+
+    let retryCheck: (RequestError) -> Bool = shouldRetry ?? { error in
+        error.isNetwork || error.isTimeout || error.isServerError
+    }
+
+    var lastError: Error?
+
+    for attempt in 1 ... policy.maxAttempts {
+        do {
+            return try await fn()
+        } catch {
+            lastError = error
+
+            // If not a RequestError or not retryable, bail immediately.
+            guard let requestError = error as? RequestError, retryCheck(requestError) else {
+                throw error
+            }
+
+            // If this was the last attempt, throw.
+            if attempt == policy.maxAttempts {
+                throw error
+            }
+
+            // Calculate delay: attempt-1 is zero-indexed retry count.
+            let delay = policy.delay(for: attempt - 1)
+            if delay > 0 {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+    }
+
+    throw lastError!
+}
