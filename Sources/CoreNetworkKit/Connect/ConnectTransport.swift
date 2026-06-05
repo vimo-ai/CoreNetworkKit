@@ -165,7 +165,22 @@ public final class ConnectTransport: HTTPClientInterface, @unchecked Sendable {
             let urlRequest = try await self.buildURLRequest(from: rebuilt)
             let dataStream = self.engine.streamRequest(urlRequest)
 
-            responseCallbacks.receiveResponseHeaders([:])
+            // Forward a response content-type to connect-swift. The streaming
+            // engine only surfaces response *data*, not headers, so synthesize
+            // it from the request codec — for the Connect streaming protocol the
+            // response Content-Type always echoes the request's. Passing empty
+            // headers made connect-swift reject the stream immediately with
+            // "unexpected content-type:" before any message was parsed.
+            var responseHeaders: Headers = [:]
+            if let contentType = request.headers.first(
+                where: { $0.key.lowercased() == "content-type" }
+            )?.value {
+                responseHeaders["content-type"] = contentType
+            } else {
+                // Safety net — connect-swift requires a streaming content-type.
+                responseHeaders["content-type"] = ["application/connect+json"]
+            }
+            responseCallbacks.receiveResponseHeaders(responseHeaders)
 
             for try await chunk in dataStream {
                 try Task.checkCancellation()
