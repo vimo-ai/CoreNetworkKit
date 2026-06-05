@@ -154,7 +154,7 @@ public final class ConnectTransport: HTTPClientInterface, @unchecked Sendable {
         responseCallbacks: ResponseCallbacks
     ) async {
         do {
-            let rebuilt = HTTPRequest(
+            let rebuilt = HTTPRequest<Data?>(
                 url: request.url,
                 headers: request.headers,
                 message: body,
