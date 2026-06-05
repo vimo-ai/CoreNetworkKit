@@ -129,40 +129,62 @@ public final class ConnectTransport: HTTPClientInterface, @unchecked Sendable {
         request: HTTPRequest<Data?>,
         responseCallbacks: ResponseCallbacks
     ) -> RequestCallbacks<Data> {
-        let streamTask = Task { [weak self] in
-            guard let self else { return }
-
-            do {
-                let urlRequest = try await self.buildURLRequest(from: request)
-                let dataStream = self.engine.streamRequest(urlRequest)
-
-                responseCallbacks.receiveResponseHeaders([:])
-
-                for try await chunk in dataStream {
-                    try Task.checkCancellation()
-                    responseCallbacks.receiveResponseData(chunk)
-                }
-
-                responseCallbacks.receiveResponseMetrics(HTTPMetrics(taskMetrics: nil))
-                responseCallbacks.receiveClose(.ok, [:], nil)
-            } catch {
-                if error is CancellationError {
-                    responseCallbacks.receiveClose(.canceled, [:], nil)
-                } else {
-                    responseCallbacks.receiveClose(
-                        .unknown,
-                        [:],
-                        self.mapToConnectError(error)
-                    )
-                }
-            }
-        }
+        // connect-swift sends the request body via sendData(), then calls
+        // sendClose() to signal "no more client data". We accumulate the
+        // body parts and start the actual HTTP request on sendClose().
+        let state = StreamState()
 
         return RequestCallbacks<Data>(
-            cancel: { streamTask.cancel() },
-            sendData: { _ in },
-            sendClose: { streamTask.cancel() }
+            cancel: { state.cancel() },
+            sendData: { data in state.appendBody(data) },
+            sendClose: { [weak self] in
+                guard let self else { return }
+                state.start(
+                    transport: self,
+                    request: request,
+                    responseCallbacks: responseCallbacks
+                )
+            }
         )
+    }
+
+    fileprivate func executeStream(
+        request: HTTPRequest<Data?>,
+        body: Data,
+        responseCallbacks: ResponseCallbacks
+    ) async {
+        do {
+            let rebuilt = HTTPRequest(
+                url: request.url,
+                headers: request.headers,
+                message: body,
+                method: request.method,
+                trailers: request.trailers,
+                idempotencyLevel: request.idempotencyLevel
+            )
+            let urlRequest = try await self.buildURLRequest(from: rebuilt)
+            let dataStream = self.engine.streamRequest(urlRequest)
+
+            responseCallbacks.receiveResponseHeaders([:])
+
+            for try await chunk in dataStream {
+                try Task.checkCancellation()
+                responseCallbacks.receiveResponseData(chunk)
+            }
+
+            responseCallbacks.receiveResponseMetrics(HTTPMetrics(taskMetrics: nil))
+            responseCallbacks.receiveClose(.ok, [:], nil)
+        } catch {
+            if error is CancellationError {
+                responseCallbacks.receiveClose(.canceled, [:], nil)
+            } else {
+                responseCallbacks.receiveClose(
+                    .unknown,
+                    [:],
+                    self.mapToConnectError(error)
+                )
+            }
+        }
     }
 
     // MARK: - Private Helpers
@@ -302,5 +324,45 @@ private struct LegacyAuthBridgeInterceptor: RequestInterceptor, @unchecked Senda
             }
         }
         return updated
+    }
+}
+
+// MARK: - Stream State
+
+/// Thread-safe state for deferred stream execution.
+/// connect-swift calls sendData() then sendClose() — we buffer the body
+/// and start the HTTP request only on sendClose().
+private final class StreamState: @unchecked Sendable {
+    private var bodyParts: [Data] = []
+    private var task: Task<Void, Never>?
+    private let lock = NSLock()
+
+    func appendBody(_ data: Data) {
+        lock.lock()
+        bodyParts.append(data)
+        lock.unlock()
+    }
+
+    func start(
+        transport: ConnectTransport,
+        request: HTTPRequest<Data?>,
+        responseCallbacks: ResponseCallbacks
+    ) {
+        lock.lock()
+        let body = bodyParts.reduce(Data()) { $0 + $1 }
+        task = Task {
+            await transport.executeStream(
+                request: request,
+                body: body,
+                responseCallbacks: responseCallbacks
+            )
+        }
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        task?.cancel()
+        lock.unlock()
     }
 }
